@@ -2,7 +2,7 @@
 name = "mistral-ocr-cli"
 version = "1.0.0"
 description = "A clean command-line tool for OCR processing using Mistral AI's API"
-authors = ["Ruben Fernandez <fernandezfuertesruben@gmail.com>"]
+authors = ["Ruben Fernandez-Fuertes <fernandezfuertesruben@gmail.com>"]
 readme = "README.md"
 packages = [{include = "mistral_ocr"}]
 license = "MIT"
