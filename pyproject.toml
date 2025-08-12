@@ -1,0 +1,66 @@
+[tool.poetry]
+name = "mistral-ocr-cli"
+version = "1.0.0"
+description = "A clean command-line tool for OCR processing using Mistral AI's API"
+authors = ["Ruben Fernandez <fernandezfuertesruben@gmail.com>"]
+readme = "README.md"
+packages = [{include = "mistral_ocr"}]
+license = "MIT"
+homepage = "https://github.com/rubenfernandez/mistral-ocr-cli"
+repository = "https://github.com/rubenfernandez/mistral-ocr-cli"
+keywords = ["ocr", "mistral", "pdf", "cli", "command-line", "document-processing", "text-extraction", "image-processing"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Text Processing",
+    "Topic :: Utilities",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[tool.poetry.dependencies]
+python = "^3.9"
+mistralai = "^1.0.0"
+python-dotenv = "^1.0.0"
+click = "^8.1.7"
+rich = "^13.7.0"
+Pillow = "^10.2.0"
+pypdf = "^4.0.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.0.0"
+black = "^24.0.0"
+ruff = "^0.3.0"
+mypy = "^1.8.0"
+pytest-cov = "^4.1.0"
+
+[tool.poetry.scripts]
+mistral-ocr = "mistral_ocr.cli:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py39']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "I", "N", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
