@@ -1,6 +1,16 @@
-# Mistral OCR
+# Mistral OCR CLI
 
 A powerful command-line tool for OCR processing using Mistral AI's state-of-the-art OCR API. Process PDFs and images to extract text, tables, equations, and images with unprecedented accuracy.
+
+## ⚠️ Disclaimer
+
+**This is an unofficial, community-created tool** that uses Mistral AI's OCR API. This project is not affiliated with, officially maintained, or endorsed by Mistral AI.
+
+- **Official Mistral OCR**: https://mistral.ai/news/mistral-ocr
+- **Official Documentation**: https://docs.mistral.ai/capabilities/OCR/
+- **Mistral AI Platform**: https://console.mistral.ai/
+
+For official tools and support, please visit [Mistral AI's website](https://mistral.ai).
 
 ## Features
 
@@ -240,4 +250,10 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Support
 
-For issues or questions, please open an issue on [GitHub](https://github.com/yourusername/mistral-ocr/issues)
+For issues or questions about this CLI tool, please open an issue on [GitHub](https://github.com/r-uben/mistral-ocr-cli/issues)
+
+For questions about Mistral AI's OCR API, please refer to [Mistral's official documentation](https://docs.mistral.ai) or contact their support.
+
+## Legal
+
+"Mistral AI" and "Mistral" are trademarks of Mistral AI. This project is not affiliated with or endorsed by Mistral AI. The use of Mistral AI's OCR API is subject to Mistral AI's [Terms of Service](https://mistral.ai/terms/).
