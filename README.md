@@ -29,32 +29,23 @@ For official tools and support, please visit [Mistral AI's website](https://mist
 - Python 3.9 or higher
 - Mistral API key from [Mistral Console](https://console.mistral.ai/)
 
-### Install with Poetry (Recommended)
+### Install from PyPI (Recommended)
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/mistral-ocr.git
-cd mistral-ocr
-
-# Install Poetry if you haven't already
-curl -sSL https://install.python-poetry.org | python3 -
-
-# Install dependencies and the package
-poetry install
-
-# Make the command available globally
-poetry build
-pip install dist/mistral_ocr-*.whl
+pip install mistral-ocr-cli
 ```
 
-### Install with pip
+### Install from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/mistral-ocr.git
-cd mistral-ocr
+git clone https://github.com/r-uben/mistral-ocr-cli.git
+cd mistral-ocr-cli
 
-# Install in editable mode for global usage
+# Install with Poetry
+poetry install
+
+# Or with pip
 pip install -e .
 ```
 
