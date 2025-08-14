@@ -110,14 +110,9 @@ class OCRProcessor:
         file_path = result["file_path"]
         response = result["response"]
         
-        # For single files, use simpler naming
-        if is_single_file:
-            base_name = "output"
-            markdown_path = output_dir / "output.md"
-        else:
-            # For multiple files, use sanitized filename
-            base_name = sanitize_filename(file_path.stem, max_length=40)
-            markdown_path = output_dir / f"{base_name}.md"
+        # Always use the original filename (just sanitized, no truncation)
+        base_name = sanitize_filename(file_path.stem, max_length=None)
+        markdown_path = output_dir / f"{base_name}.md"
         
         markdown_content = []
         
@@ -200,7 +195,7 @@ class OCRProcessor:
                 if result:
                     self.save_results(result, output_path, is_single_file=False)
                     success_count += 1
-                    base_name = sanitize_filename(file_path.stem, max_length=40)
+                    base_name = sanitize_filename(file_path.stem, max_length=None)
                     self.processed_files.append({
                         "file": str(file_path),
                         "size": file_path.stat().st_size,
@@ -233,10 +228,11 @@ class OCRProcessor:
             
             if result:
                 self.save_results(result, output_dir, is_single_file=True)
+                base_name = sanitize_filename(input_path.stem, max_length=None)
                 self.processed_files.append({
                     "file": str(input_path),
                     "size": input_path.stat().st_size,
-                    "output": str(output_dir / "output.md")
+                    "output": str(output_dir / f"{base_name}.md")
                 })
                 
                 # Save metadata

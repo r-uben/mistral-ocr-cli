@@ -114,19 +114,21 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size_bytes:.2f} TB"
 
 
-def sanitize_filename(filename: str, max_length: int = 50) -> str:
+def sanitize_filename(filename: str, max_length: Optional[int] = None) -> str:
     """Sanitize filename by removing or replacing invalid characters."""
     invalid_chars = '<>:"/\\|?*'
     for char in invalid_chars:
         filename = filename.replace(char, "_")
     
-    # Truncate long filenames but keep extension
-    if len(filename) > max_length and '.' in filename:
-        name, ext = filename.rsplit('.', 1)
-        if len(name) > max_length - len(ext) - 1:
-            name = name[:max_length - len(ext) - 4] + "..."
-        filename = f"{name}.{ext}"
-    elif len(filename) > max_length:
-        filename = filename[:max_length - 3] + "..."
+    # Only truncate if max_length is specified
+    if max_length is not None:
+        # Truncate long filenames but keep extension
+        if len(filename) > max_length and '.' in filename:
+            name, ext = filename.rsplit('.', 1)
+            if len(name) > max_length - len(ext) - 1:
+                name = name[:max_length - len(ext) - 4] + "..."
+            filename = f"{name}.{ext}"
+        elif len(filename) > max_length:
+            filename = filename[:max_length - 3] + "..."
     
     return filename

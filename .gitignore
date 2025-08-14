@@ -84,6 +84,8 @@ ENV/
 env.bak/
 venv.bak/
 .python-version
+test_env/
+*_env/
 
 # Poetry
 poetry.lock
@@ -238,6 +240,11 @@ temp/
 # ================================
 # Project Specific
 # ================================
+
+# Announcement and social media templates
+ANNOUNCEMENT.md
+announcement.md
+social_media.md
 
 # Installation script outputs
 install.log
