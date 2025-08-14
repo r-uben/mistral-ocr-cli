@@ -14,6 +14,7 @@ from .utils import (
     determine_output_path,
     format_file_size,
     get_supported_files,
+    load_metadata,
     sanitize_filename,
     save_base64_image,
     save_metadata,
@@ -158,7 +159,8 @@ class OCRProcessor:
         self, 
         input_dir: Path, 
         output_dir: Optional[Path] = None,
-        add_timestamp: bool = False
+        add_timestamp: bool = False,
+        reprocess: bool = False
     ) -> Tuple[int, int]:
         """Process all supported files in a directory."""
         files = get_supported_files(input_dir)
@@ -168,7 +170,32 @@ class OCRProcessor:
             return 0, 0
         
         output_path = determine_output_path(input_dir, output_dir, add_timestamp=add_timestamp)
-        console.print(f"[blue]Processing {len(files)} file(s)...[/blue]")
+        
+        # Load existing metadata to check for already processed files
+        existing_metadata = load_metadata(output_path)
+        existing_files_set = {item["file"] for item in existing_metadata["files_processed"]}
+        
+        # Filter files based on reprocess flag
+        files_to_process = []
+        skipped_files = []
+        for file_path in files:
+            if str(file_path) in existing_files_set and not reprocess:
+                skipped_files.append(file_path)
+                if self.config.verbose:
+                    console.print(f"[dim]Skipping already processed: {file_path.name}[/dim]")
+            else:
+                files_to_process.append(file_path)
+        
+        if skipped_files:
+            console.print(f"[yellow]Skipping {len(skipped_files)} already processed file(s)[/yellow]")
+            if not self.config.verbose:
+                console.print("[dim]Use --verbose to see which files were skipped[/dim]")
+        
+        if not files_to_process:
+            console.print("[green]All files already processed. Use --reprocess to force reprocessing.[/green]")
+            return 0, 0
+        
+        console.print(f"[blue]Processing {len(files_to_process)} file(s)...[/blue]")
         console.print(f"[blue]Output directory: {output_path}[/blue]\n")
         
         start_time = time.time()
@@ -182,9 +209,9 @@ class OCRProcessor:
             TimeRemainingColumn(),
             console=console
         ) as progress:
-            task = progress.add_task("Processing files...", total=len(files))
+            task = progress.add_task("Processing files...", total=len(files_to_process))
             
-            for file_path in files:
+            for file_path in files_to_process:
                 file_size = format_file_size(file_path.stat().st_size)
                 progress.update(
                     task, 
@@ -208,18 +235,32 @@ class OCRProcessor:
         processing_time = time.time() - start_time
         save_metadata(output_path, self.processed_files, processing_time, self.errors)
         
-        return success_count, len(files)
+        return success_count, len(files_to_process)
     
     def process(
         self, 
         input_path: Path, 
         output_path: Optional[Path] = None,
-        add_timestamp: bool = False
+        add_timestamp: bool = False,
+        reprocess: bool = False
     ) -> None:
         """Process input path (file or directory)."""
         if input_path.is_file():
             # Process single file
             output_dir = determine_output_path(input_path, output_path, add_timestamp=add_timestamp)
+            
+            # Check if file already processed
+            existing_metadata = load_metadata(output_dir)
+            existing_files_set = {item["file"] for item in existing_metadata["files_processed"]}
+            
+            if str(input_path) in existing_files_set and not reprocess:
+                base_name = sanitize_filename(input_path.stem, max_length=None)
+                output_file = output_dir / f"{base_name}.md"
+                console.print(f"[yellow]File already processed: {input_path.name}[/yellow]")
+                console.print(f"[dim]Output exists at: {output_file}[/dim]")
+                console.print("[dim]Use --reprocess to force reprocessing.[/dim]")
+                return
+            
             console.print(f"[blue]Processing file: {input_path}[/blue]")
             console.print(f"[blue]Output directory: {output_dir}[/blue]\n")
             
@@ -246,7 +287,7 @@ class OCRProcessor:
         
         elif input_path.is_dir():
             # Process directory
-            success_count, total_count = self.process_directory(input_path, output_path, add_timestamp)
+            success_count, total_count = self.process_directory(input_path, output_path, add_timestamp, reprocess)
             
             console.print(f"\n[green]✓ Successfully processed {success_count}/{total_count} files[/green]")
             if self.errors:

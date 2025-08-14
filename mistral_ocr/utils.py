@@ -3,6 +3,7 @@
 import base64
 import json
 import mimetypes
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -85,19 +86,47 @@ def determine_output_path(
     return output_dir
 
 
+def load_metadata(output_dir: Path) -> Dict:
+    """Load existing metadata from JSON file."""
+    metadata_path = output_dir / "metadata.json"
+    if metadata_path.exists():
+        with open(metadata_path, "r") as f:
+            return json.load(f)
+    return {
+        "files_processed": [],
+        "total_files": 0,
+        "processing_time_seconds": 0,
+        "errors": [],
+        "error_count": 0
+    }
+
+
 def save_metadata(
     output_dir: Path,
     files_processed: List[Dict],
     processing_time: float,
     errors: List[Dict]
 ) -> None:
-    """Save processing metadata to JSON file."""
+    """Save processing metadata to JSON file (append/update mode)."""
+    # Load existing metadata
+    existing_metadata = load_metadata(output_dir)
+    
+    # Create a dict of existing files for quick lookup
+    existing_files = {item["file"]: item for item in existing_metadata["files_processed"]}
+    
+    # Update with new files (overwrite if exists, add if new)
+    for new_file in files_processed:
+        new_file["last_processed"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        existing_files[new_file["file"]] = new_file
+    
+    # Update metadata
     metadata = {
-        "files_processed": files_processed,
-        "total_files": len(files_processed),
-        "processing_time_seconds": processing_time,
-        "errors": errors,
-        "error_count": len(errors)
+        "files_processed": list(existing_files.values()),
+        "total_files": len(existing_files),
+        "processing_time_seconds": existing_metadata["processing_time_seconds"] + processing_time,
+        "errors": errors,  # Errors from current session only
+        "error_count": len(errors),
+        "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
     }
     
     metadata_path = output_dir / "metadata.json"

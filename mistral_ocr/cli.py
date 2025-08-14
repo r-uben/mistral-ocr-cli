@@ -58,6 +58,12 @@ ORIGINAL_CWD = os.environ.get('MISTRAL_OCR_CWD', os.getcwd())
     help="Add timestamp to output folder name (default: False)"
 )
 @click.option(
+    "--reprocess",
+    is_flag=True,
+    default=False,
+    help="Reprocess files even if they already exist in metadata (default: False)"
+)
+@click.option(
     "--verbose", "-v",
     is_flag=True,
     help="Enable verbose output"
@@ -71,6 +77,7 @@ def main(
     env_file: Optional[Path],
     include_images: bool,
     add_timestamp: bool,
+    reprocess: bool,
     verbose: bool
 ) -> None:
     """
@@ -131,7 +138,7 @@ def main(
         processor = OCRProcessor(config)
         
         # Process input
-        processor.process(input_path, output_path, add_timestamp=add_timestamp)
+        processor.process(input_path, output_path, add_timestamp=add_timestamp, reprocess=reprocess)
         
         # Print summary
         if processor.errors and verbose:
