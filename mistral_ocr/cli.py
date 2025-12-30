@@ -53,6 +53,11 @@ ORIGINAL_CWD = os.environ.get('MISTRAL_OCR_CWD', os.getcwd())
     help="Include extracted images in output (default: True)"
 )
 @click.option(
+    "--save-originals/--no-save-originals",
+    default=True,
+    help="Save original input images alongside OCR results (default: True)"
+)
+@click.option(
     "--add-timestamp/--no-timestamp",
     default=False,
     help="Add timestamp to output folder name (default: False)"
@@ -68,7 +73,7 @@ ORIGINAL_CWD = os.environ.get('MISTRAL_OCR_CWD', os.getcwd())
     is_flag=True,
     help="Enable verbose output"
 )
-@click.version_option(version="1.0.0", prog_name="mistral-ocr")
+@click.version_option(version="1.0.1", prog_name="mistral-ocr")
 def main(
     input_path: Path,
     output_path: Optional[Path],
@@ -76,6 +81,7 @@ def main(
     model: str,
     env_file: Optional[Path],
     include_images: bool,
+    save_originals: bool,
     add_timestamp: bool,
     reprocess: bool,
     verbose: bool
@@ -132,6 +138,7 @@ def main(
         # Override config with CLI options
         config.model = model
         config.include_images = include_images
+        config.save_original_images = save_originals
         config.verbose = verbose
         
         # Create processor

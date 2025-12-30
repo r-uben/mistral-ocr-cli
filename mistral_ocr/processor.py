@@ -1,5 +1,6 @@
 """Core OCR processing module using Mistral AI."""
 
+import shutil
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -115,6 +116,19 @@ class OCRProcessor:
         base_name = sanitize_filename(file_path.stem, max_length=None)
         markdown_path = output_dir / f"{base_name}.md"
         
+        # Save original input image if it's an image file (not PDF) and saving is enabled
+        if self.config.save_original_images and file_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']:
+            originals_dir = output_dir / "original_images"
+            originals_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Copy the original file to the output directory with unique name
+            # Prefix with base_name to avoid conflicts
+            original_output_path = originals_dir / f"{base_name}{file_path.suffix}"
+            shutil.copy2(file_path, original_output_path)
+            
+            if self.config.verbose:
+                console.print(f"[green]✓[/green] Saved original image to {original_output_path}")
+        
         markdown_content = []
         
         # Add file header
@@ -122,6 +136,11 @@ class OCRProcessor:
         markdown_content.append(f"**Original File:** {file_path.name}\n")
         markdown_content.append(f"**Full Path:** `{file_path}`\n")
         markdown_content.append(f"**Processed:** {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        
+        # Add reference to original image if saved
+        if self.config.save_original_images and file_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']:
+            markdown_content.append(f"**Original Image:** [View](./original_images/{base_name}{file_path.suffix})\n\n")
+        
         markdown_content.append("---\n\n")
         
         # Process each page
@@ -134,19 +153,20 @@ class OCRProcessor:
                     markdown_content.append(page.markdown)
                     markdown_content.append("\n\n")
                 
-                # Save images if included
+                # Save images if included - prefix with document name for clarity
                 if self.config.include_images and hasattr(page, 'images') and page.images:
-                    images_dir = output_dir / "images"
+                    images_dir = output_dir / "extracted_images"
                     images_dir.mkdir(parents=True, exist_ok=True)
                     
                     for idx, image in enumerate(page.images):
                         if hasattr(image, 'base64'):
-                            image_filename = f"page{page.index + 1}_img{idx + 1}.png"
+                            # Include document name in extracted image filename
+                            image_filename = f"{base_name}_page{page.index + 1}_img{idx + 1}.png"
                             image_path = images_dir / image_filename
                             save_base64_image(image.base64, image_path)
                             
                             # Add image reference to markdown
-                            markdown_content.append(f"![Image {idx + 1}](./images/{image_filename})\n\n")
+                            markdown_content.append(f"![Image {idx + 1}](./extracted_images/{image_filename})\n\n")
         
         # Write markdown file
         with open(markdown_path, "w", encoding="utf-8") as f:

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mistral-ocr-cli"
-version = "1.0.0"
+version = "1.0.1"
 description = "A clean command-line tool for OCR processing using Mistral AI's API"
 authors = ["Ruben Fernandez-Fuertes <fernandezfuertesruben@gmail.com>"]
 readme = "README.md"
@@ -33,7 +33,7 @@ mistralai = "^1.0.0"
 python-dotenv = "^1.0.0"
 click = "^8.1.7"
 rich = "^13.7.0"
-Pillow = "^10.2.0"
+Pillow = "^11.0.0"
 pypdf = "^4.0.0"
 
 [tool.poetry.group.dev.dependencies]
