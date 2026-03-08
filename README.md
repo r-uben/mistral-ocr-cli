@@ -1,7 +1,7 @@
 # Mistral OCR CLI
 
 [![PyPI version](https://badge.fury.io/py/mistral-ocr-cli.svg)](https://badge.fury.io/py/mistral-ocr-cli)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A powerful command-line tool for OCR processing using Mistral AI's state-of-the-art OCR API. Process PDFs and images to extract text, tables, equations, and images with unprecedented accuracy.
@@ -30,7 +30,7 @@ For official tools and support, please visit [Mistral AI's website](https://mist
 
 ### Prerequisites
 
-- Python 3.9 or higher
+- Python 3.10 or higher
 - Mistral API key from [Mistral Console](https://console.mistral.ai/)
 
 ### Install from PyPI (Recommended)
