@@ -13,6 +13,7 @@ from .utils import (
     create_data_uri,
     determine_output_path,
     format_file_size,
+    get_image_base64_data,
     get_supported_files,
     load_metadata,
     sanitize_filename,
@@ -140,10 +141,11 @@ class OCRProcessor:
                     images_dir.mkdir(parents=True, exist_ok=True)
                     
                     for idx, image in enumerate(page.images):
-                        if hasattr(image, 'base64'):
+                        image_base64 = get_image_base64_data(image)
+                        if image_base64:
                             image_filename = f"page{page.index + 1}_img{idx + 1}.png"
                             image_path = images_dir / image_filename
-                            save_base64_image(image.base64, image_path)
+                            save_base64_image(image_base64, image_path)
                             
                             # Add image reference to markdown
                             markdown_content.append(f"![Image {idx + 1}](./images/{image_filename})\n\n")

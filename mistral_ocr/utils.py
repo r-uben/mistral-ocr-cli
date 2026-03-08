@@ -46,6 +46,16 @@ def save_base64_image(base64_string: str, output_path: Path) -> None:
         f.write(image_data)
 
 
+def get_image_base64_data(image: object) -> Optional[str]:
+    """Extract raw base64 image data from an OCR image object."""
+    image_data = getattr(image, "image_base64", None) or getattr(image, "base64", None)
+    if not image_data:
+        return None
+    if "," in image_data:
+        return image_data.split(",", 1)[1]
+    return image_data
+
+
 def get_supported_files(directory: Path) -> List[Path]:
     """Get all supported files from a directory."""
     supported_extensions = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
