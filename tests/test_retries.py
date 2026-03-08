@@ -22,8 +22,8 @@ class StubClient:
 
 
 def test_process_file_retries_transient_errors(monkeypatch, tmp_path: Path) -> None:
-    pdf_path = tmp_path / "document.pdf"
-    pdf_path.write_bytes(b"%PDF-1.4\n")
+    image_path = tmp_path / "document.png"
+    image_path.write_bytes(b"fake-image")
 
     processor = OCRProcessor.__new__(OCRProcessor)
     processor.config = Config(api_key="test")
@@ -38,7 +38,7 @@ def test_process_file_retries_transient_errors(monkeypatch, tmp_path: Path) -> N
 
     monkeypatch.setattr("mistral_ocr.processor.time.sleep", lambda _: None)
 
-    result = processor.process_file(pdf_path)
+    result = processor.process_file(image_path)
 
     assert result is not None
     assert result["success"] is True
@@ -46,8 +46,8 @@ def test_process_file_retries_transient_errors(monkeypatch, tmp_path: Path) -> N
 
 
 def test_process_file_does_not_retry_non_retryable_errors(tmp_path: Path) -> None:
-    pdf_path = tmp_path / "document.pdf"
-    pdf_path.write_bytes(b"%PDF-1.4\n")
+    image_path = tmp_path / "document.png"
+    image_path.write_bytes(b"fake-image")
 
     processor = OCRProcessor.__new__(OCRProcessor)
     processor.config = Config(api_key="test")
@@ -55,7 +55,7 @@ def test_process_file_does_not_retry_non_retryable_errors(tmp_path: Path) -> Non
     processor.errors = []
     processor.processed_files = []
 
-    result = processor.process_file(pdf_path)
+    result = processor.process_file(image_path)
 
     assert result is None
     assert processor.client.ocr.calls == 1
