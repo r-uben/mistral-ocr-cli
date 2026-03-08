@@ -11,7 +11,6 @@ from rich.console import Console
 from .config import Config
 from .processor import OCRProcessor
 
-
 console = Console()
 
 # Get the original working directory if set
@@ -53,6 +52,12 @@ ORIGINAL_CWD = os.environ.get('MISTRAL_OCR_CWD', os.getcwd())
     help="Include extracted images in output (default: True)"
 )
 @click.option(
+    "--max-pages",
+    type=click.IntRange(min=0),
+    required=False,
+    help="Maximum PDF pages to process; use 0 to disable the limit"
+)
+@click.option(
     "--add-timestamp/--no-timestamp",
     default=False,
     help="Add timestamp to output folder name (default: False)"
@@ -76,6 +81,7 @@ def main(
     model: str,
     env_file: Optional[Path],
     include_images: bool,
+    max_pages: Optional[int],
     add_timestamp: bool,
     reprocess: bool,
     verbose: bool
@@ -132,6 +138,8 @@ def main(
         # Override config with CLI options
         config.model = model
         config.include_images = include_images
+        if max_pages is not None:
+            config.max_pages = max_pages
         config.verbose = verbose
         
         # Create processor

@@ -44,6 +44,11 @@ class Config:
             include_images=os.getenv("INCLUDE_IMAGES", "true").lower() == "true",
             verbose=os.getenv("VERBOSE", "false").lower() == "true",
         )
+
+    @property
+    def max_pages_limit(self) -> Optional[int]:
+        """Return the configured page limit, or None when disabled."""
+        return self.max_pages if self.max_pages > 0 else None
     
     def validate_file_size(self, file_path: Path) -> None:
         """Validate that file size is within limits."""

@@ -23,6 +23,7 @@ For official tools and support, please visit [Mistral AI's website](https://mist
 - 📁 **Batch Processing**: Process single files or entire directories
 - 🎯 **Smart Output**: Preserves document structure in markdown format
 - 🖼️ **Image Extraction**: Optionally extract and save embedded images
+- 📚 **PDF Upload + Chunking**: Upload PDFs via Mistral files API and split large page ranges automatically
 - 📈 **Progress Tracking**: Real-time progress bars for batch operations
 - 🔧 **Flexible Configuration**: Environment variables or command-line options
 
@@ -111,6 +112,7 @@ Options:
   --model TEXT               OCR model (default: mistral-ocr-latest)
   --env-file PATH            Path to .env file
   --include-images/--no-images  Extract images (default: True)
+  --max-pages INTEGER        Maximum PDF pages to process; use 0 to disable the limit
   -v, --verbose              Enable verbose output
   --version                  Show version
   --help                     Show this message
@@ -140,6 +142,12 @@ mistral-ocr document.pdf --env-file .env.production
 
 ```bash
 mistral-ocr document.pdf --no-images
+```
+
+### Process only the first 25 PDF pages
+
+```bash
+mistral-ocr document.pdf --max-pages 25
 ```
 
 ### Pass API key directly (not recommended for production)
@@ -184,9 +192,12 @@ The `metadata.json` file contains:
 
 ## Limitations
 
-- Maximum file size: 50 MB
-- Maximum pages per document: 1,000
+- Maximum image file size: 50 MB
+- Maximum PDF pages per OCR request chunk: 1,000
 - Supported formats: PDF, JPG, JPEG, PNG, WEBP, GIF, BMP, TIFF
+
+PDFs are uploaded through the Mistral files API and processed in chunks when needed.
+The `--max-pages` option caps total PDF pages processed; use `0` to disable the cap.
 
 ## Pricing
 

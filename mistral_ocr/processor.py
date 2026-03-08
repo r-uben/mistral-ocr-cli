@@ -1,27 +1,31 @@
 """Core OCR processing module using Mistral AI."""
 
+import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 
 from mistralai import Mistral
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
 from .config import Config
 from .utils import (
     create_data_uri,
     determine_output_path,
     format_file_size,
+    get_pdf_page_count,
     get_supported_files,
     load_metadata,
     sanitize_filename,
     save_base64_image,
     save_metadata,
+    split_pdf_into_chunks,
 )
 
-
 console = Console()
+PDF_REQUEST_PAGE_LIMIT = 1000
 
 
 class OCRProcessor:
@@ -45,24 +49,6 @@ class OCRProcessor:
             file_size_mb = file_path.stat().st_size / (1024 * 1024)
             if self.config.verbose:
                 console.print(f"[dim]File size: {file_size_mb:.2f} MB[/dim]")
-            self.config.validate_file_size(file_path)
-            
-            # Create data URI for the file
-            if self.config.verbose:
-                console.print(f"[dim]Creating data URI for {file_path.suffix} file...[/dim]")
-            data_uri = create_data_uri(file_path)
-            
-            # Determine document type based on file extension
-            if file_path.suffix.lower() == ".pdf":
-                document = {
-                    "type": "document_url",
-                    "document_url": data_uri
-                }
-            else:
-                document = {
-                    "type": "image_url",
-                    "image_url": data_uri
-                }
             
             # Process with Mistral OCR
             if not hasattr(self.client, 'ocr'):
@@ -73,14 +59,14 @@ class OCRProcessor:
                 )
             
             if self.config.verbose:
-                console.print(f"[dim]Sending to Mistral OCR API...[/dim]")
+                console.print("[dim]Sending to Mistral OCR API...[/dim]")
                 console.print(f"[dim]Model: {self.config.model}[/dim]")
-            
-            response = self.client.ocr.process(
-                model=self.config.model,
-                document=document,
-                include_image_base64=self.config.include_images
-            )
+
+            if file_path.suffix.lower() == ".pdf":
+                response = self._process_pdf_file(file_path)
+            else:
+                self.config.validate_file_size(file_path)
+                response = self._process_image_file(file_path)
             
             return {
                 "file_path": file_path,
@@ -100,6 +86,80 @@ class OCRProcessor:
                 "error": str(e)
             })
             return None
+
+    def _process_image_file(self, file_path: Path) -> object:
+        """Process an image file through the OCR API."""
+        if self.config.verbose:
+            console.print(f"[dim]Creating data URI for {file_path.suffix} file...[/dim]")
+
+        data_uri = create_data_uri(file_path)
+        return self.client.ocr.process(
+            model=self.config.model,
+            document={
+                "type": "image_url",
+                "image_url": data_uri
+            },
+            include_image_base64=self.config.include_images
+        )
+
+    def _process_pdf_file(self, file_path: Path) -> object:
+        """Process a PDF file via uploaded file chunks."""
+        page_limit = self.config.max_pages_limit
+        page_count = get_pdf_page_count(file_path)
+
+        with tempfile.TemporaryDirectory(prefix="mistral_ocr_") as temp_dir:
+            chunks = split_pdf_into_chunks(
+                file_path,
+                Path(temp_dir),
+                max_pages_per_chunk=PDF_REQUEST_PAGE_LIMIT,
+                max_chunk_size_mb=self.config.max_file_size_mb,
+                max_pages=page_limit,
+            )
+
+            combined_pages = []
+            for chunk_path, start_page, _page_count in chunks:
+                uploaded_file_id = None
+                try:
+                    with open(chunk_path, "rb") as handle:
+                        uploaded = self.client.files.upload(
+                            file={"file_name": chunk_path.name, "content": handle},
+                            purpose="ocr",
+                        )
+                    uploaded_file_id = uploaded.id
+
+                    response = self.client.ocr.process(
+                        model=self.config.model,
+                        document={"type": "file", "file_id": uploaded.id},
+                        include_image_base64=self.config.include_images
+                    )
+                finally:
+                    if uploaded_file_id:
+                        self._delete_uploaded_file(uploaded_file_id)
+
+                for local_index, page in enumerate(getattr(response, "pages", [])):
+                    combined_pages.append(
+                        SimpleNamespace(
+                            index=start_page + local_index,
+                            markdown=getattr(page, "markdown", ""),
+                            images=getattr(page, "images", []),
+                        )
+                    )
+
+        truncated_message = None
+        if page_limit and page_count > page_limit:
+            truncated_message = (
+                f"Document truncated to first {page_limit} of {page_count} pages."
+            )
+
+        return SimpleNamespace(pages=combined_pages, truncated_message=truncated_message)
+
+    def _delete_uploaded_file(self, file_id: str) -> None:
+        """Best-effort cleanup for uploaded OCR files."""
+        try:
+            self.client.files.delete(file_id=file_id)
+        except Exception:
+            if self.config.verbose:
+                console.print(f"[dim]Failed to delete uploaded OCR file: {file_id}[/dim]")
     
     def save_results(
         self, 
@@ -118,10 +178,12 @@ class OCRProcessor:
         markdown_content = []
         
         # Add file header
-        markdown_content.append(f"# OCR Results\n\n")
+        markdown_content.append("# OCR Results\n\n")
         markdown_content.append(f"**Original File:** {file_path.name}\n")
         markdown_content.append(f"**Full Path:** `{file_path}`\n")
         markdown_content.append(f"**Processed:** {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        if getattr(response, "truncated_message", None):
+            markdown_content.append(f"**Note:** {response.truncated_message}\n\n")
         markdown_content.append("---\n\n")
         
         # Process each page
@@ -280,10 +342,10 @@ class OCRProcessor:
                 processing_time = time.time() - start_time
                 save_metadata(output_dir, self.processed_files, processing_time, self.errors)
                 
-                console.print(f"\n[green]✓ Successfully processed 1 file[/green]")
+                console.print("\n[green]✓ Successfully processed 1 file[/green]")
                 console.print(f"[dim]Processing time: {processing_time:.2f} seconds[/dim]")
             else:
-                console.print(f"\n[red]✗ Failed to process file[/red]")
+                console.print("\n[red]✗ Failed to process file[/red]")
         
         elif input_path.is_dir():
             # Process directory

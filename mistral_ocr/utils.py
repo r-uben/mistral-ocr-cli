@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from pypdf import PdfReader, PdfWriter
+
 
 def encode_file_to_base64(file_path: Path) -> str:
     """Encode a file to base64 string."""
@@ -58,6 +60,54 @@ def get_supported_files(directory: Path) -> List[Path]:
     return sorted(files)
 
 
+def get_pdf_page_count(file_path: Path) -> int:
+    """Return the number of pages in a PDF."""
+    return len(PdfReader(str(file_path)).pages)
+
+
+def split_pdf_into_chunks(
+    file_path: Path,
+    output_dir: Path,
+    *,
+    max_pages_per_chunk: int,
+    max_chunk_size_mb: Optional[int] = None,
+    max_pages: Optional[int] = None,
+) -> List[Tuple[Path, int, int]]:
+    """Split a PDF into page-bounded chunks and return chunk metadata."""
+    reader = PdfReader(str(file_path))
+    total_pages = len(reader.pages)
+    pages_to_process = min(total_pages, max_pages) if max_pages else total_pages
+    bytes_per_page = file_path.stat().st_size / max(total_pages, 1)
+
+    pages_per_chunk = max_pages_per_chunk
+    if max_chunk_size_mb and bytes_per_page > 0:
+        size_bound = max(1, int((max_chunk_size_mb * 1024 * 1024) / bytes_per_page))
+        pages_per_chunk = min(pages_per_chunk, size_bound)
+
+    pages_per_chunk = max(1, pages_per_chunk)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    chunks: List[Tuple[Path, int, int]] = []
+    start_page = 0
+    chunk_index = 0
+
+    while start_page < pages_to_process:
+        end_page = min(start_page + pages_per_chunk, pages_to_process)
+        writer = PdfWriter()
+        for page_index in range(start_page, end_page):
+            writer.add_page(reader.pages[page_index])
+
+        chunk_path = output_dir / f"{file_path.stem}_chunk_{chunk_index + 1}.pdf"
+        with open(chunk_path, "wb") as chunk_file:
+            writer.write(chunk_file)
+
+        chunks.append((chunk_path, start_page, end_page - start_page))
+        start_page = end_page
+        chunk_index += 1
+
+    return chunks
+
+
 def determine_output_path(
     input_path: Path, 
     output_path: Optional[Path] = None,
@@ -67,11 +117,8 @@ def determine_output_path(
     """Determine the output path for OCR results."""
     if output_path:
         return output_path
-    
-    if input_path.is_file():
-        parent_dir = input_path.parent
-    else:
-        parent_dir = input_path
+
+    parent_dir = input_path.parent if input_path.is_file() else input_path
     
     # Add timestamp if requested
     if add_timestamp:
@@ -90,7 +137,7 @@ def load_metadata(output_dir: Path) -> Dict:
     """Load existing metadata from JSON file."""
     metadata_path = output_dir / "metadata.json"
     if metadata_path.exists():
-        with open(metadata_path, "r") as f:
+        with open(metadata_path) as f:
             return json.load(f)
     return {
         "files_processed": [],
