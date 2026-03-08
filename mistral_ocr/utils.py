@@ -66,6 +66,7 @@ def determine_output_path(
 ) -> Path:
     """Determine the output path for OCR results."""
     if output_path:
+        output_path.mkdir(parents=True, exist_ok=True)
         return output_path
     
     if input_path.is_file():

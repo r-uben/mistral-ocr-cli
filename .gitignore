@@ -147,6 +147,8 @@ samples/
 # Test scripts
 test_*.py
 *_test.py
+!tests/test_*.py
+!tests/*_test.py
 scratch.py
 debug.py
 temp.py
