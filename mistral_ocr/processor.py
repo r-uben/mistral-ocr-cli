@@ -1,5 +1,6 @@
 """Core OCR processing module using Mistral AI."""
 
+import random
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -22,6 +23,13 @@ from .utils import (
 
 
 console = Console()
+
+
+def _is_retryable_ocr_error(error: Exception) -> bool:
+    """Return True when an OCR error is likely transient."""
+    error_str = str(error).lower()
+    retry_markers = ("429", "rate limit", "rate_limit", "timeout", "502", "503", "504")
+    return any(marker in error_str for marker in retry_markers)
 
 
 class OCRProcessor:
@@ -76,11 +84,7 @@ class OCRProcessor:
                 console.print(f"[dim]Sending to Mistral OCR API...[/dim]")
                 console.print(f"[dim]Model: {self.config.model}[/dim]")
             
-            response = self.client.ocr.process(
-                model=self.config.model,
-                document=document,
-                include_image_base64=self.config.include_images
-            )
+            response = self._process_with_retry(document)
             
             return {
                 "file_path": file_path,
@@ -100,6 +104,30 @@ class OCRProcessor:
                 "error": str(e)
             })
             return None
+
+    def _process_with_retry(self, document: Dict) -> object:
+        """Call Mistral OCR with bounded retry/backoff for transient errors."""
+        max_retries = 3
+        base_delay_seconds = 0.5
+
+        for attempt in range(max_retries + 1):
+            try:
+                return self.client.ocr.process(
+                    model=self.config.model,
+                    document=document,
+                    include_image_base64=self.config.include_images
+                )
+            except Exception as error:
+                if attempt >= max_retries or not _is_retryable_ocr_error(error):
+                    raise
+
+                delay = base_delay_seconds * (2 ** attempt) + random.uniform(0, 0.25)
+                if self.config.verbose:
+                    console.print(
+                        f"[yellow]Transient OCR error, retrying in {delay:.2f}s "
+                        f"({attempt + 1}/{max_retries})[/yellow]"
+                    )
+                time.sleep(delay)
     
     def save_results(
         self, 
