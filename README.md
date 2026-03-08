@@ -111,6 +111,8 @@ Options:
   --model TEXT               OCR model (default: mistral-ocr-latest)
   --env-file PATH            Path to .env file
   --include-images/--no-images  Extract images (default: True)
+  --metadata/--no-metadata   Include the markdown metadata header block (default: True)
+  --page-headings/--no-page-headings  Include markdown headings for each OCR page (default: True)
   -v, --verbose              Enable verbose output
   --version                  Show version
   --help                     Show this message
@@ -142,6 +144,17 @@ mistral-ocr document.pdf --env-file .env.production
 mistral-ocr document.pdf --no-images
 ```
 
+### Omit markdown page headings
+
+```bash
+mistral-ocr document.pdf --no-page-headings
+```
+
+### Omit the markdown metadata header
+
+```bash
+mistral-ocr document.pdf --no-metadata
+```
 ### Pass API key directly (not recommended for production)
 
 ```bash
@@ -172,6 +185,10 @@ Each processed document generates a markdown file containing:
 - Tables rendered in markdown format
 - Mathematical equations
 - Image references (if image extraction is enabled)
+
+You can suppress the top markdown metadata block with `--no-metadata`
+and per-page headings such as `## Page 1` with `--no-page-headings`.
+These flags only affect the `.md` body; the sidecar `metadata.json` is still written.
 
 ### Metadata File
 

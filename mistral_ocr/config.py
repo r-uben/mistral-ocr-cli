@@ -18,6 +18,8 @@ class Config:
     max_pages: int = 1000
     output_format: str = "markdown"
     include_images: bool = True
+    include_metadata: bool = True
+    include_page_headings: bool = True
     verbose: bool = False
     
     @classmethod
@@ -42,6 +44,8 @@ class Config:
             max_pages=int(os.getenv("MAX_PAGES", "1000")),
             output_format=os.getenv("OUTPUT_FORMAT", "markdown"),
             include_images=os.getenv("INCLUDE_IMAGES", "true").lower() == "true",
+            include_metadata=os.getenv("INCLUDE_METADATA", "true").lower() == "true",
+            include_page_headings=os.getenv("INCLUDE_PAGE_HEADINGS", "true").lower() == "true",
             verbose=os.getenv("VERBOSE", "false").lower() == "true",
         )
     

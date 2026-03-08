@@ -116,21 +116,22 @@ class OCRProcessor:
         markdown_path = output_dir / f"{base_name}.md"
         
         markdown_content = []
-        
-        # Add file header
-        markdown_content.append(f"# OCR Results\n\n")
-        markdown_content.append(f"**Original File:** {file_path.name}\n")
-        markdown_content.append(f"**Full Path:** `{file_path}`\n")
-        markdown_content.append(f"**Processed:** {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        markdown_content.append("---\n\n")
-        
-        # Process each page
-        if hasattr(response, 'pages'):
+
+        if self.config.include_metadata:
+            markdown_content.append("# OCR Results\n\n")
+            markdown_content.append(f"**Original File:** {file_path.name}\n")
+            markdown_content.append(f"**Full Path:** `{file_path}`\n")
+            markdown_content.append(f"**Processed:** {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            if getattr(response, "truncated_message", None):
+                markdown_content.append(f"**Note:** {response.truncated_message}\n\n")
+            markdown_content.append("---\n\n")
+
+        if hasattr(response, "pages"):
             for page in response.pages:
-                markdown_content.append(f"## Page {page.index + 1}\n\n")
-                
-                # Add extracted text
-                if hasattr(page, 'markdown'):
+                if self.config.include_page_headings:
+                    markdown_content.append(f"## Page {page.index + 1}\n\n")
+
+                if hasattr(page, "markdown"):
                     markdown_content.append(page.markdown)
                     markdown_content.append("\n\n")
                 
