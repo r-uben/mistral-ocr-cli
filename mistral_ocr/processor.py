@@ -2,11 +2,11 @@
 
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from mistralai import Mistral
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
 from .config import Config
 from .utils import (
@@ -19,7 +19,6 @@ from .utils import (
     save_base64_image,
     save_metadata,
 )
-
 
 console = Console()
 
@@ -53,6 +52,7 @@ class OCRProcessor:
             data_uri = create_data_uri(file_path)
             
             # Determine document type based on file extension
+            document: Any
             if file_path.suffix.lower() == ".pdf":
                 document = {
                     "type": "document_url",
@@ -73,7 +73,7 @@ class OCRProcessor:
                 )
             
             if self.config.verbose:
-                console.print(f"[dim]Sending to Mistral OCR API...[/dim]")
+                console.print("[dim]Sending to Mistral OCR API...[/dim]")
                 console.print(f"[dim]Model: {self.config.model}[/dim]")
             
             response = self.client.ocr.process(
@@ -281,10 +281,10 @@ class OCRProcessor:
                 processing_time = time.time() - start_time
                 save_metadata(output_dir, self.processed_files, processing_time, self.errors)
                 
-                console.print(f"\n[green]✓ Successfully processed 1 file[/green]")
+                console.print("\n[green]✓ Successfully processed 1 file[/green]")
                 console.print(f"[dim]Processing time: {processing_time:.2f} seconds[/dim]")
             else:
-                console.print(f"\n[red]✗ Failed to process file[/red]")
+                console.print("\n[red]✗ Failed to process file[/red]")
         
         elif input_path.is_dir():
             # Process directory

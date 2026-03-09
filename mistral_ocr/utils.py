@@ -5,7 +5,7 @@ import json
 import mimetypes
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, cast
 
 
 def encode_file_to_base64(file_path: Path) -> str:
@@ -68,10 +68,7 @@ def determine_output_path(
     if output_path:
         return output_path
     
-    if input_path.is_file():
-        parent_dir = input_path.parent
-    else:
-        parent_dir = input_path
+    parent_dir = input_path.parent if input_path.is_file() else input_path
     
     # Add timestamp if requested
     if add_timestamp:
@@ -86,12 +83,12 @@ def determine_output_path(
     return output_dir
 
 
-def load_metadata(output_dir: Path) -> Dict:
+def load_metadata(output_dir: Path) -> Dict[str, Any]:
     """Load existing metadata from JSON file."""
     metadata_path = output_dir / "metadata.json"
     if metadata_path.exists():
-        with open(metadata_path, "r") as f:
-            return json.load(f)
+        with open(metadata_path) as f:
+            return cast(Dict[str, Any], json.load(f))
     return {
         "files_processed": [],
         "total_files": 0,
@@ -136,11 +133,12 @@ def save_metadata(
 
 def format_file_size(size_bytes: int) -> str:
     """Format file size in human-readable format."""
+    size = float(size_bytes)
     for unit in ["B", "KB", "MB", "GB"]:
-        if size_bytes < 1024.0:
-            return f"{size_bytes:.2f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.2f} TB"
+        if size < 1024.0:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+    return f"{size:.2f} TB"
 
 
 def sanitize_filename(filename: str, max_length: Optional[int] = None) -> str:

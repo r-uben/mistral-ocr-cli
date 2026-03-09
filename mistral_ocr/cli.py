@@ -11,7 +11,6 @@ from rich.console import Console
 from .config import Config
 from .processor import OCRProcessor
 
-
 console = Console()
 
 # Get the original working directory if set
