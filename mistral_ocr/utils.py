@@ -46,15 +46,25 @@ def save_base64_image(base64_string: str, output_path: Path) -> None:
         f.write(image_data)
 
 
-def get_supported_files(directory: Path) -> List[Path]:
-    """Get all supported files from a directory."""
+def get_supported_files(
+    directory: Path,
+    exclude_dirs: Optional[List[str]] = None
+) -> List[Path]:
+    """Get all supported files from a directory, excluding output directories."""
     supported_extensions = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
+    if exclude_dirs is None:
+        exclude_dirs = ["mistral_ocr_output"]
     files = []
-    
+
+    exclude_set = set(exclude_dirs)
     for file_path in directory.rglob("*"):
         if file_path.is_file() and file_path.suffix.lower() in supported_extensions:
+            # Skip files inside excluded directories (check parent dirs only, not filename)
+            rel_parts = file_path.relative_to(directory).parts[:-1]  # exclude filename
+            if any(part in exclude_set for part in rel_parts):
+                continue
             files.append(file_path)
-    
+
     return sorted(files)
 
 
@@ -66,6 +76,9 @@ def determine_output_path(
 ) -> Path:
     """Determine the output path for OCR results."""
     if output_path:
+        if output_path.exists() and not output_path.is_dir():
+            raise ValueError(f"Output path exists and is not a directory: {output_path}")
+        output_path.mkdir(parents=True, exist_ok=True)
         return output_path
     
     if input_path.is_file():
@@ -75,7 +88,6 @@ def determine_output_path(
     
     # Add timestamp if requested
     if add_timestamp:
-        import time
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         folder_name = f"{default_folder_name}_{timestamp}"
     else:
@@ -86,12 +98,7 @@ def determine_output_path(
     return output_dir
 
 
-def load_metadata(output_dir: Path) -> Dict:
-    """Load existing metadata from JSON file."""
-    metadata_path = output_dir / "metadata.json"
-    if metadata_path.exists():
-        with open(metadata_path, "r") as f:
-            return json.load(f)
+def _empty_metadata() -> Dict:
     return {
         "files_processed": [],
         "total_files": 0,
@@ -101,37 +108,73 @@ def load_metadata(output_dir: Path) -> Dict:
     }
 
 
+def load_metadata(output_dir: Path) -> Dict:
+    """Load existing metadata from JSON file.
+
+    Returns empty metadata on missing or corrupt files.
+    """
+    metadata_path = output_dir / "metadata.json"
+    if metadata_path.exists():
+        try:
+            with open(metadata_path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, KeyError):
+            return _empty_metadata()
+    return _empty_metadata()
+
+
 def save_metadata(
     output_dir: Path,
     files_processed: List[Dict],
     processing_time: float,
-    errors: List[Dict]
+    errors: List[Dict],
+    base_processing_time: Optional[float] = None
 ) -> None:
-    """Save processing metadata to JSON file (append/update mode)."""
+    """Save processing metadata to JSON file (append/update mode).
+
+    Args:
+        processing_time: Elapsed time for the *current* session.
+        base_processing_time: Accumulated time from *prior* sessions. If None,
+            loaded from existing metadata (use this on the first call). Pass
+            the returned value on subsequent calls within the same session to
+            avoid overcounting.
+    """
     # Load existing metadata
     existing_metadata = load_metadata(output_dir)
-    
+
+    if base_processing_time is None:
+        base_processing_time = existing_metadata.get("processing_time_seconds", 0)
+
     # Create a dict of existing files for quick lookup
     existing_files = {item["file"]: item for item in existing_metadata["files_processed"]}
-    
+
     # Update with new files (overwrite if exists, add if new)
     for new_file in files_processed:
         new_file["last_processed"] = time.strftime("%Y-%m-%d %H:%M:%S")
         existing_files[new_file["file"]] = new_file
-    
-    # Update metadata
+
+    # Merge errors: keep historical errors, append new ones (deduplicate by file)
+    existing_errors = {e["file"]: e for e in existing_metadata.get("errors", [])}
+    for err in errors:
+        err["last_seen"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        existing_errors[err["file"]] = err
+    all_errors = list(existing_errors.values())
+
+    # Update metadata — total time = prior sessions + current session elapsed
     metadata = {
         "files_processed": list(existing_files.values()),
         "total_files": len(existing_files),
-        "processing_time_seconds": existing_metadata["processing_time_seconds"] + processing_time,
-        "errors": errors,  # Errors from current session only
-        "error_count": len(errors),
+        "processing_time_seconds": base_processing_time + processing_time,
+        "errors": all_errors,
+        "error_count": len(all_errors),
         "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
     }
     
     metadata_path = output_dir / "metadata.json"
-    with open(metadata_path, "w") as f:
+    tmp_path = metadata_path.with_suffix(".json.tmp")
+    with open(tmp_path, "w") as f:
         json.dump(metadata, f, indent=2, default=str)
+    tmp_path.replace(metadata_path)
 
 
 def format_file_size(size_bytes: int) -> str:
@@ -141,6 +184,25 @@ def format_file_size(size_bytes: int) -> str:
             return f"{size_bytes:.2f} {unit}"
         size_bytes /= 1024.0
     return f"{size_bytes:.2f} TB"
+
+
+def make_unique_basename(file_path: Path, base_dir: Optional[Path] = None) -> str:
+    """Create a unique base name for output files.
+
+    When base_dir is provided (directory mode), includes the relative path
+    to disambiguate files with the same stem in different subdirectories.
+    E.g., subdir/report.pdf -> subdir__report
+    """
+    stem = file_path.stem
+    if base_dir is not None:
+        try:
+            rel = file_path.parent.relative_to(base_dir)
+            if rel != Path("."):
+                prefix = str(rel).replace("/", "__").replace("\\", "__")
+                stem = f"{prefix}__{stem}"
+        except ValueError:
+            pass
+    return sanitize_filename(stem, max_length=200)
 
 
 def sanitize_filename(filename: str, max_length: Optional[int] = None) -> str:

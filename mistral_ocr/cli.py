@@ -8,6 +8,7 @@ from typing import Optional
 import click
 from rich.console import Console
 
+from . import __version__
 from .config import Config
 from .processor import OCRProcessor
 
@@ -73,7 +74,7 @@ ORIGINAL_CWD = os.environ.get('MISTRAL_OCR_CWD', os.getcwd())
     is_flag=True,
     help="Enable verbose output"
 )
-@click.version_option(version="1.0.1", prog_name="mistral-ocr")
+@click.version_option(version=__version__, prog_name="mistral-ocr")
 def main(
     input_path: Path,
     output_path: Optional[Path],
@@ -124,22 +125,24 @@ def main(
         if verbose:
             console.print("[dim]Loading configuration...[/dim]")
         
+        # If API key is provided via CLI, set it before loading config
+        # (must happen before load_dotenv, which won't override existing vars)
+        if api_key:
+            os.environ["MISTRAL_API_KEY"] = api_key
+
         # Create config from environment
-        if env_file:
-            config = Config.from_env(env_file)
-        else:
-            # If API key is provided via CLI, set it as env var
-            if api_key:
-                import os
-                os.environ["MISTRAL_API_KEY"] = api_key
-            
-            config = Config.from_env()
-        
-        # Override config with CLI options
-        config.model = model
-        config.include_images = include_images
-        config.save_original_images = save_originals
-        config.verbose = verbose
+        config = Config.from_env(env_file)
+
+        # Only override config with CLI options that were explicitly passed
+        ctx = click.get_current_context()
+        if "model" in ctx.params and ctx.get_parameter_source("model") != click.core.ParameterSource.DEFAULT:
+            config.model = model
+        if "include_images" in ctx.params and ctx.get_parameter_source("include_images") != click.core.ParameterSource.DEFAULT:
+            config.include_images = include_images
+        if "save_originals" in ctx.params and ctx.get_parameter_source("save_originals") != click.core.ParameterSource.DEFAULT:
+            config.save_original_images = save_originals
+        if "verbose" in ctx.params and ctx.get_parameter_source("verbose") != click.core.ParameterSource.DEFAULT:
+            config.verbose = verbose
         
         # Create processor
         processor = OCRProcessor(config)
@@ -148,11 +151,14 @@ def main(
         processor.process(input_path, output_path, add_timestamp=add_timestamp, reprocess=reprocess)
         
         # Print summary
-        if processor.errors and verbose:
-            console.print("\n[yellow]⚠ Errors encountered:[/yellow]")
-            for error in processor.errors:
-                console.print(f"  [red]• {error['file']}: {error['error']}[/red]")
-        
+        if processor.errors:
+            if verbose:
+                console.print("\n[yellow]⚠ Errors encountered:[/yellow]")
+                for error in processor.errors:
+                    console.print(f"  [red]• {error['file']}: {error['error']}[/red]")
+            console.print("\n[bold yellow]⚠ Processing complete with errors.[/bold yellow]\n")
+            sys.exit(1)
+
         console.print("\n[bold green]✨ Processing complete![/bold green]\n")
         
     except ValueError as e:

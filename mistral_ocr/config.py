@@ -15,8 +15,6 @@ class Config:
     api_key: str
     model: str = "mistral-ocr-latest"
     max_file_size_mb: int = 50
-    max_pages: int = 1000
-    output_format: str = "markdown"
     include_images: bool = True
     save_original_images: bool = True
     verbose: bool = False
@@ -40,8 +38,6 @@ class Config:
             api_key=api_key,
             model=os.getenv("MISTRAL_MODEL", "mistral-ocr-latest"),
             max_file_size_mb=int(os.getenv("MAX_FILE_SIZE_MB", "50")),
-            max_pages=int(os.getenv("MAX_PAGES", "1000")),
-            output_format=os.getenv("OUTPUT_FORMAT", "markdown"),
             include_images=os.getenv("INCLUDE_IMAGES", "true").lower() == "true",
             save_original_images=os.getenv("SAVE_ORIGINAL_IMAGES", "true").lower() == "true",
             verbose=os.getenv("VERBOSE", "false").lower() == "true",

@@ -16,6 +16,7 @@ from .utils import (
     format_file_size,
     get_supported_files,
     load_metadata,
+    make_unique_basename,
     sanitize_filename,
     save_base64_image,
     save_metadata,
@@ -97,23 +98,24 @@ class OCRProcessor:
                 import traceback
                 console.print(f"[dim]{traceback.format_exc()}[/dim]")
             self.errors.append({
-                "file": str(file_path),
+                "file": str(file_path.resolve()),
                 "error": str(e)
             })
             return None
     
     def save_results(
-        self, 
-        result: Dict, 
+        self,
+        result: Dict,
         output_dir: Path,
-        is_single_file: bool = False
+        is_single_file: bool = False,
+        base_dir: Optional[Path] = None
     ) -> None:
         """Save OCR results to files."""
         file_path = result["file_path"]
         response = result["response"]
-        
-        # Always use the original filename (just sanitized, no truncation)
-        base_name = sanitize_filename(file_path.stem, max_length=None)
+
+        # Use unique basename (includes relative path for directory mode)
+        base_name = make_unique_basename(file_path, base_dir=base_dir)
         markdown_path = output_dir / f"{base_name}.md"
         
         # Save original input image if it's an image file (not PDF) and saving is enabled
@@ -176,30 +178,38 @@ class OCRProcessor:
             console.print(f"[green]✓[/green] Saved results to {markdown_path}")
     
     def process_directory(
-        self, 
-        input_dir: Path, 
+        self,
+        input_dir: Path,
         output_dir: Optional[Path] = None,
         add_timestamp: bool = False,
         reprocess: bool = False
     ) -> Tuple[int, int]:
         """Process all supported files in a directory."""
-        files = get_supported_files(input_dir)
-        
+        output_path = determine_output_path(input_dir, output_dir, add_timestamp=add_timestamp)
+
+        # Exclude the output directory from file discovery
+        exclude_dirs = ["mistral_ocr_output"]
+        try:
+            rel = output_path.resolve().relative_to(input_dir.resolve())
+            if rel.parts:  # guard: output_path != input_dir
+                exclude_dirs.append(rel.parts[0])
+        except ValueError:
+            pass  # output_path is outside input_dir, nothing to exclude
+        files = get_supported_files(input_dir, exclude_dirs=exclude_dirs)
+
         if not files:
             console.print("[yellow]No supported files found in the directory.[/yellow]")
             return 0, 0
         
-        output_path = determine_output_path(input_dir, output_dir, add_timestamp=add_timestamp)
-        
         # Load existing metadata to check for already processed files
         existing_metadata = load_metadata(output_path)
-        existing_files_set = {item["file"] for item in existing_metadata["files_processed"]}
-        
+        existing_files_set = {str(Path(item["file"]).resolve()) for item in existing_metadata["files_processed"]}
+
         # Filter files based on reprocess flag
         files_to_process = []
         skipped_files = []
         for file_path in files:
-            if str(file_path) in existing_files_set and not reprocess:
+            if str(file_path.resolve()) in existing_files_set and not reprocess:
                 skipped_files.append(file_path)
                 if self.config.verbose:
                     console.print(f"[dim]Skipping already processed: {file_path.name}[/dim]")
@@ -220,7 +230,9 @@ class OCRProcessor:
         
         start_time = time.time()
         success_count = 0
-        
+        # Capture prior-session time once to avoid overcounting on incremental flushes
+        base_processing_time = existing_metadata.get("processing_time_seconds", 0)
+
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -240,20 +252,28 @@ class OCRProcessor:
                 
                 result = self.process_file(file_path)
                 if result:
-                    self.save_results(result, output_path, is_single_file=False)
-                    success_count += 1
-                    base_name = sanitize_filename(file_path.stem, max_length=None)
-                    self.processed_files.append({
-                        "file": str(file_path),
-                        "size": file_path.stat().st_size,
-                        "output": str(output_path / f"{base_name}.md")
-                    })
-                
+                    try:
+                        self.save_results(result, output_path, is_single_file=False, base_dir=input_dir)
+                        success_count += 1
+                        base_name = make_unique_basename(file_path, base_dir=input_dir)
+                        self.processed_files.append({
+                            "file": str(file_path.resolve()),
+                            "size": file_path.stat().st_size,
+                            "output": str(output_path / f"{base_name}.md")
+                        })
+                    except Exception as e:
+                        console.print(f"[red]Error saving results for {file_path.name}: {e}[/red]")
+                        self.errors.append({
+                            "file": str(file_path.resolve()),
+                            "error": f"Save failed: {e}"
+                        })
+
                 progress.update(task, advance=1)
-        
-        # Save metadata
-        processing_time = time.time() - start_time
-        save_metadata(output_path, self.processed_files, processing_time, self.errors)
+
+                # Flush metadata incrementally so progress survives interruptions
+                processing_time = time.time() - start_time
+                save_metadata(output_path, self.processed_files, processing_time, self.errors,
+                              base_processing_time=base_processing_time)
         
         return success_count, len(files_to_process)
     
@@ -271,9 +291,9 @@ class OCRProcessor:
             
             # Check if file already processed
             existing_metadata = load_metadata(output_dir)
-            existing_files_set = {item["file"] for item in existing_metadata["files_processed"]}
-            
-            if str(input_path) in existing_files_set and not reprocess:
+            existing_files_set = {str(Path(item["file"]).resolve()) for item in existing_metadata["files_processed"]}
+
+            if str(input_path.resolve()) in existing_files_set and not reprocess:
                 base_name = sanitize_filename(input_path.stem, max_length=None)
                 output_file = output_dir / f"{base_name}.md"
                 console.print(f"[yellow]File already processed: {input_path.name}[/yellow]")
@@ -289,9 +309,9 @@ class OCRProcessor:
             
             if result:
                 self.save_results(result, output_dir, is_single_file=True)
-                base_name = sanitize_filename(input_path.stem, max_length=None)
+                base_name = make_unique_basename(input_path)
                 self.processed_files.append({
-                    "file": str(input_path),
+                    "file": str(input_path.resolve()),
                     "size": input_path.stat().st_size,
                     "output": str(output_dir / f"{base_name}.md")
                 })
