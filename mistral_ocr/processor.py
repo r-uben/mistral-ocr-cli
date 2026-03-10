@@ -242,14 +242,10 @@ class OCRProcessor:
         output_path = determine_output_path(input_dir, output_dir, add_timestamp=add_timestamp)
 
         # Exclude the output directory from file discovery
-        exclude_dirs = ["mistral_ocr_output"]
-        try:
-            rel = output_path.resolve().relative_to(input_dir.resolve())
-            if rel.parts:  # guard: output_path != input_dir
-                exclude_dirs.append(rel.parts[0])
-        except ValueError:
-            pass  # output_path is outside input_dir, nothing to exclude
-        files = get_supported_files(input_dir, exclude_dirs=exclude_dirs)
+        files = get_supported_files(
+            input_dir,
+            exclude_paths=[output_path.resolve()],
+        )
 
         if not files:
             console.print("[yellow]No supported files found in the directory.[/yellow]")

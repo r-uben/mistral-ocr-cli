@@ -54,9 +54,16 @@ def save_base64_image(base64_string: str, output_path: Path) -> None:
 
 def get_supported_files(
     directory: Path,
-    exclude_dirs: Optional[List[str]] = None
+    exclude_dirs: Optional[List[str]] = None,
+    exclude_paths: Optional[List[Path]] = None,
 ) -> List[Path]:
-    """Get all supported files from a directory, excluding output directories."""
+    """Get all supported files from a directory, excluding output directories.
+
+    Args:
+        directory: Root directory to search.
+        exclude_dirs: Directory *names* to skip (matched against each path component).
+        exclude_paths: Resolved absolute paths to skip (any file underneath is excluded).
+    """
     supported_extensions = {
         ".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff",
         ".avif", ".docx", ".pptx",
@@ -66,10 +73,15 @@ def get_supported_files(
     files = []
 
     exclude_set = set(exclude_dirs)
+    resolved_excludes = [p.resolve() for p in (exclude_paths or [])]
     for file_path in directory.rglob("*"):
         if file_path.is_file() and file_path.suffix.lower() in supported_extensions:
-            # Skip files inside excluded directories (check parent dirs only, not filename)
-            rel_parts = file_path.relative_to(directory).parts[:-1]  # exclude filename
+            resolved = file_path.resolve()
+            # Skip files inside excluded absolute paths
+            if any(ep in resolved.parents for ep in resolved_excludes):
+                continue
+            # Skip files inside excluded directory names (check parent dirs only)
+            rel_parts = file_path.relative_to(directory).parts[:-1]
             if any(part in exclude_set for part in rel_parts):
                 continue
             files.append(file_path)
