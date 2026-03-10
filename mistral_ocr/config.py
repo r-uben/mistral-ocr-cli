@@ -17,6 +17,9 @@ class Config:
     max_file_size_mb: int = 50
     include_images: bool = True
     save_original_images: bool = True
+    table_format: Optional[str] = None  # None, "markdown", or "html"
+    extract_header: bool = False
+    extract_footer: bool = False
     verbose: bool = False
     
     @classmethod
@@ -34,12 +37,19 @@ class Config:
                 "Please set it or create a .env file."
             )
         
+        table_fmt = os.getenv("TABLE_FORMAT", "").lower() or None
+        if table_fmt and table_fmt not in ("markdown", "html"):
+            table_fmt = None
+
         return cls(
             api_key=api_key,
             model=os.getenv("MISTRAL_MODEL", "mistral-ocr-latest"),
             max_file_size_mb=int(os.getenv("MAX_FILE_SIZE_MB", "50")),
             include_images=os.getenv("INCLUDE_IMAGES", "true").lower() == "true",
             save_original_images=os.getenv("SAVE_ORIGINAL_IMAGES", "true").lower() == "true",
+            table_format=table_fmt,
+            extract_header=os.getenv("EXTRACT_HEADER", "false").lower() == "true",
+            extract_footer=os.getenv("EXTRACT_FOOTER", "false").lower() == "true",
             verbose=os.getenv("VERBOSE", "false").lower() == "true",
         )
     

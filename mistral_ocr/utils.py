@@ -18,15 +18,21 @@ def get_mime_type(file_path: Path) -> str:
     """Get MIME type of a file."""
     mime_type, _ = mimetypes.guess_type(str(file_path))
     if not mime_type:
-        if file_path.suffix.lower() == ".pdf":
-            return "application/pdf"
-        elif file_path.suffix.lower() in [".jpg", ".jpeg"]:
-            return "image/jpeg"
-        elif file_path.suffix.lower() == ".png":
-            return "image/png"
-        elif file_path.suffix.lower() == ".webp":
-            return "image/webp"
-        else:
+        _fallback = {
+            ".pdf": "application/pdf",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+            ".avif": "image/avif",
+            ".gif": "image/gif",
+            ".bmp": "image/bmp",
+            ".tiff": "image/tiff",
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        }
+        mime_type = _fallback.get(file_path.suffix.lower())
+        if not mime_type:
             raise ValueError(f"Unsupported file type: {file_path.suffix}")
     return mime_type
 
@@ -51,7 +57,10 @@ def get_supported_files(
     exclude_dirs: Optional[List[str]] = None
 ) -> List[Path]:
     """Get all supported files from a directory, excluding output directories."""
-    supported_extensions = {".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff"}
+    supported_extensions = {
+        ".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff",
+        ".avif", ".docx", ".pptx",
+    }
     if exclude_dirs is None:
         exclude_dirs = ["mistral_ocr_output"]
     files = []

@@ -64,6 +64,22 @@ ORIGINAL_CWD = os.environ.get('MISTRAL_OCR_CWD', os.getcwd())
     help="Add timestamp to output folder name (default: False)"
 )
 @click.option(
+    "--table-format",
+    type=click.Choice(["markdown", "html"], case_sensitive=False),
+    default=None,
+    help="Extract tables in a separate format (markdown or html). OCR 3+ only."
+)
+@click.option(
+    "--extract-headers/--no-extract-headers",
+    default=False,
+    help="Extract page headers (default: False). OCR 3+ only."
+)
+@click.option(
+    "--extract-footers/--no-extract-footers",
+    default=False,
+    help="Extract page footers (default: False). OCR 3+ only."
+)
+@click.option(
     "--reprocess",
     is_flag=True,
     default=False,
@@ -84,6 +100,9 @@ def main(
     include_images: bool,
     save_originals: bool,
     add_timestamp: bool,
+    table_format: Optional[str],
+    extract_headers: bool,
+    extract_footers: bool,
     reprocess: bool,
     verbose: bool
 ) -> None:
@@ -143,6 +162,12 @@ def main(
             config.save_original_images = save_originals
         if "verbose" in ctx.params and ctx.get_parameter_source("verbose") != click.core.ParameterSource.DEFAULT:
             config.verbose = verbose
+        if "table_format" in ctx.params and ctx.get_parameter_source("table_format") != click.core.ParameterSource.DEFAULT:
+            config.table_format = table_format
+        if "extract_headers" in ctx.params and ctx.get_parameter_source("extract_headers") != click.core.ParameterSource.DEFAULT:
+            config.extract_header = extract_headers
+        if "extract_footers" in ctx.params and ctx.get_parameter_source("extract_footers") != click.core.ParameterSource.DEFAULT:
+            config.extract_footer = extract_footers
         
         # Create processor
         processor = OCRProcessor(config)

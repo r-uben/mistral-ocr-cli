@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mistral-ocr-cli"
-version = "1.0.2"
+version = "1.1.0"
 description = "A clean command-line tool for OCR processing using Mistral AI's API"
 authors = ["Ruben Fernandez-Fuertes <fernandezfuertesruben@gmail.com>"]
 readme = "README.md"

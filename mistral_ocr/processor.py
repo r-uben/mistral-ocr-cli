@@ -55,7 +55,8 @@ class OCRProcessor:
             data_uri = create_data_uri(file_path)
             
             # Determine document type based on file extension
-            if file_path.suffix.lower() == ".pdf":
+            doc_extensions = {".pdf", ".docx", ".pptx"}
+            if file_path.suffix.lower() in doc_extensions:
                 document = {
                     "type": "document_url",
                     "document_url": data_uri
@@ -65,7 +66,7 @@ class OCRProcessor:
                     "type": "image_url",
                     "image_url": data_uri
                 }
-            
+
             # Process with Mistral OCR
             if not hasattr(self.client, 'ocr'):
                 raise AttributeError(
@@ -73,16 +74,25 @@ class OCRProcessor:
                     "Please ensure you have the latest mistralai package "
                     "and OCR access enabled for your API key."
                 )
-            
+
             if self.config.verbose:
                 console.print(f"[dim]Sending to Mistral OCR API...[/dim]")
                 console.print(f"[dim]Model: {self.config.model}[/dim]")
-            
-            response = self.client.ocr.process(
-                model=self.config.model,
-                document=document,
-                include_image_base64=self.config.include_images
-            )
+
+            # Build API kwargs (only pass OCR 3 params if set)
+            ocr_kwargs = {
+                "model": self.config.model,
+                "document": document,
+                "include_image_base64": self.config.include_images,
+            }
+            if self.config.table_format:
+                ocr_kwargs["table_format"] = self.config.table_format
+            if self.config.extract_header:
+                ocr_kwargs["extract_header"] = True
+            if self.config.extract_footer:
+                ocr_kwargs["extract_footer"] = True
+
+            response = self.client.ocr.process(**ocr_kwargs)
             
             return {
                 "file_path": file_path,
@@ -118,57 +128,90 @@ class OCRProcessor:
         base_name = make_unique_basename(file_path, base_dir=base_dir)
         markdown_path = output_dir / f"{base_name}.md"
         
-        # Save original input image if it's an image file (not PDF) and saving is enabled
-        if self.config.save_original_images and file_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']:
+        # Save original input image if it's an image file and saving is enabled
+        _image_exts = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.avif'}
+        if self.config.save_original_images and file_path.suffix.lower() in _image_exts:
             originals_dir = output_dir / "original_images"
             originals_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Copy the original file to the output directory with unique name
-            # Prefix with base_name to avoid conflicts
             original_output_path = originals_dir / f"{base_name}{file_path.suffix}"
             shutil.copy2(file_path, original_output_path)
-            
             if self.config.verbose:
                 console.print(f"[green]✓[/green] Saved original image to {original_output_path}")
-        
+
         markdown_content = []
-        
+
         # Add file header
         markdown_content.append(f"# OCR Results\n\n")
         markdown_content.append(f"**Original File:** {file_path.name}\n")
         markdown_content.append(f"**Full Path:** `{file_path}`\n")
         markdown_content.append(f"**Processed:** {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        
+
         # Add reference to original image if saved
-        if self.config.save_original_images and file_path.suffix.lower() in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff']:
+        if self.config.save_original_images and file_path.suffix.lower() in _image_exts:
             markdown_content.append(f"**Original Image:** [View](./original_images/{base_name}{file_path.suffix})\n\n")
-        
+
         markdown_content.append("---\n\n")
-        
+
         # Process each page
         if hasattr(response, 'pages'):
             for page in response.pages:
                 markdown_content.append(f"## Page {page.index + 1}\n\n")
-                
+
+                # Page dimensions (OCR 3)
+                if hasattr(page, 'dimensions') and page.dimensions:
+                    dims = page.dimensions
+                    w = getattr(dims, 'width', None)
+                    h = getattr(dims, 'height', None)
+                    if w and h:
+                        markdown_content.append(f"*Page size: {w} x {h}*\n\n")
+
+                # Header (OCR 3)
+                if hasattr(page, 'header') and page.header:
+                    markdown_content.append(f"> **Header:** {page.header}\n\n")
+
                 # Add extracted text
                 if hasattr(page, 'markdown'):
                     markdown_content.append(page.markdown)
                     markdown_content.append("\n\n")
-                
-                # Save images if included - prefix with document name for clarity
+
+                # Tables (OCR 3 - separate table extraction)
+                if hasattr(page, 'tables') and page.tables:
+                    tables_dir = output_dir / "extracted_tables"
+                    tables_dir.mkdir(parents=True, exist_ok=True)
+                    ext = "html" if self.config.table_format == "html" else "md"
+                    for tidx, table in enumerate(page.tables):
+                        table_content = getattr(table, 'content', None) or getattr(table, 'markdown', None) or str(table)
+                        table_filename = f"{base_name}_page{page.index + 1}_table{tidx + 1}.{ext}"
+                        table_path = tables_dir / table_filename
+                        with open(table_path, "w", encoding="utf-8") as tf:
+                            tf.write(table_content)
+                        markdown_content.append(f"[Table {tidx + 1}](./extracted_tables/{table_filename})\n\n")
+
+                # Hyperlinks (OCR 3)
+                if hasattr(page, 'hyperlinks') and page.hyperlinks:
+                    markdown_content.append("**Hyperlinks:**\n")
+                    for link in page.hyperlinks:
+                        text = getattr(link, 'text', '') or ''
+                        url = getattr(link, 'url', '') or getattr(link, 'href', '') or ''
+                        if url:
+                            markdown_content.append(f"- [{text or url}]({url})\n")
+                    markdown_content.append("\n")
+
+                # Save images if included
                 if self.config.include_images and hasattr(page, 'images') and page.images:
                     images_dir = output_dir / "extracted_images"
                     images_dir.mkdir(parents=True, exist_ok=True)
-                    
+
                     for idx, image in enumerate(page.images):
-                        if hasattr(image, 'base64'):
-                            # Include document name in extracted image filename
+                        if hasattr(image, 'base64') and image.base64:
                             image_filename = f"{base_name}_page{page.index + 1}_img{idx + 1}.png"
                             image_path = images_dir / image_filename
                             save_base64_image(image.base64, image_path)
-                            
-                            # Add image reference to markdown
                             markdown_content.append(f"![Image {idx + 1}](./extracted_images/{image_filename})\n\n")
+
+                # Footer (OCR 3)
+                if hasattr(page, 'footer') and page.footer:
+                    markdown_content.append(f"> **Footer:** {page.footer}\n\n")
         
         # Write markdown file
         with open(markdown_path, "w", encoding="utf-8") as f:
