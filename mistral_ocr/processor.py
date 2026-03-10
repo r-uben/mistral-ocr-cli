@@ -120,35 +120,42 @@ class OCRProcessor:
         is_single_file: bool = False,
         base_dir: Optional[Path] = None
     ) -> None:
-        """Save OCR results to files."""
+        """Save OCR results in a per-document folder structure.
+
+        Output layout:
+            output_dir/
+            ├── doc_name/
+            │   ├── doc_name.pdf        # original copy
+            │   ├── doc_name.md         # OCR markdown
+            │   ├── figures/            # extracted images
+            │   └── tables/             # extracted tables
+            └── metadata.json
+        """
         file_path = result["file_path"]
         response = result["response"]
 
-        # Use unique basename (includes relative path for directory mode)
+        # Per-document folder
         base_name = make_unique_basename(file_path, base_dir=base_dir)
-        markdown_path = output_dir / f"{base_name}.md"
-        
-        # Save original input image if it's an image file and saving is enabled
-        _image_exts = {'.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.tiff', '.avif'}
-        if self.config.save_original_images and file_path.suffix.lower() in _image_exts:
-            originals_dir = output_dir / "original_images"
-            originals_dir.mkdir(parents=True, exist_ok=True)
-            original_output_path = originals_dir / f"{base_name}{file_path.suffix}"
-            shutil.copy2(file_path, original_output_path)
+        doc_dir = output_dir / base_name
+        doc_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy original file into the document folder
+        if self.config.save_original_images:
+            original_copy = doc_dir / f"{base_name}{file_path.suffix}"
+            shutil.copy2(file_path, original_copy)
             if self.config.verbose:
-                console.print(f"[green]✓[/green] Saved original image to {original_output_path}")
+                console.print(f"[green]✓[/green] Saved original to {original_copy}")
 
         markdown_content = []
 
-        # Add file header
+        # File header
         markdown_content.append(f"# OCR Results\n\n")
         markdown_content.append(f"**Original File:** {file_path.name}\n")
         markdown_content.append(f"**Full Path:** `{file_path}`\n")
         markdown_content.append(f"**Processed:** {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
 
-        # Add reference to original image if saved
-        if self.config.save_original_images and file_path.suffix.lower() in _image_exts:
-            markdown_content.append(f"**Original Image:** [View](./original_images/{base_name}{file_path.suffix})\n\n")
+        if self.config.save_original_images:
+            markdown_content.append(f"**Original:** [{base_name}{file_path.suffix}](./{base_name}{file_path.suffix})\n\n")
 
         markdown_content.append("---\n\n")
 
@@ -169,23 +176,23 @@ class OCRProcessor:
                 if hasattr(page, 'header') and page.header:
                     markdown_content.append(f"> **Header:** {page.header}\n\n")
 
-                # Add extracted text
+                # Extracted text
                 if hasattr(page, 'markdown'):
                     markdown_content.append(page.markdown)
                     markdown_content.append("\n\n")
 
-                # Tables (OCR 3 - separate table extraction)
+                # Tables (OCR 3)
                 if hasattr(page, 'tables') and page.tables:
-                    tables_dir = output_dir / "extracted_tables"
+                    tables_dir = doc_dir / "tables"
                     tables_dir.mkdir(parents=True, exist_ok=True)
                     ext = "html" if self.config.table_format == "html" else "md"
                     for tidx, table in enumerate(page.tables):
                         table_content = getattr(table, 'content', None) or getattr(table, 'markdown', None) or str(table)
-                        table_filename = f"{base_name}_page{page.index + 1}_table{tidx + 1}.{ext}"
+                        table_filename = f"page{page.index + 1}_table{tidx + 1}.{ext}"
                         table_path = tables_dir / table_filename
                         with open(table_path, "w", encoding="utf-8") as tf:
                             tf.write(table_content)
-                        markdown_content.append(f"[Table {tidx + 1}](./extracted_tables/{table_filename})\n\n")
+                        markdown_content.append(f"[Table {tidx + 1}](./tables/{table_filename})\n\n")
 
                 # Hyperlinks (OCR 3)
                 if hasattr(page, 'hyperlinks') and page.hyperlinks:
@@ -197,31 +204,30 @@ class OCRProcessor:
                             markdown_content.append(f"- [{text or url}]({url})\n")
                     markdown_content.append("\n")
 
-                # Save images if included
+                # Figures
                 if self.config.include_images and hasattr(page, 'images') and page.images:
-                    images_dir = output_dir / "extracted_images"
-                    images_dir.mkdir(parents=True, exist_ok=True)
+                    figures_dir = doc_dir / "figures"
+                    figures_dir.mkdir(parents=True, exist_ok=True)
 
                     for idx, image in enumerate(page.images):
-                        # SDK uses 'image_base64', not 'base64'
                         b64_data = getattr(image, 'image_base64', None) or getattr(image, 'base64', None)
                         if b64_data:
                             img_id = getattr(image, 'id', None) or f"img{idx + 1}"
-                            # Use original extension from id if available (e.g. img-0.jpeg)
                             img_ext = Path(img_id).suffix if '.' in str(img_id) else '.png'
-                            image_filename = f"{base_name}_page{page.index + 1}_img{idx + 1}{img_ext}"
-                            image_path = images_dir / image_filename
+                            image_filename = f"page{page.index + 1}_img{idx + 1}{img_ext}"
+                            image_path = figures_dir / image_filename
                             save_base64_image(b64_data, image_path)
-                            markdown_content.append(f"![Image {idx + 1}](./extracted_images/{image_filename})\n\n")
+                            markdown_content.append(f"![Image {idx + 1}](./figures/{image_filename})\n\n")
 
                 # Footer (OCR 3)
                 if hasattr(page, 'footer') and page.footer:
                     markdown_content.append(f"> **Footer:** {page.footer}\n\n")
-        
+
         # Write markdown file
+        markdown_path = doc_dir / f"{base_name}.md"
         with open(markdown_path, "w", encoding="utf-8") as f:
             f.write("".join(markdown_content))
-        
+
         if self.config.verbose:
             console.print(f"[green]✓[/green] Saved results to {markdown_path}")
     
@@ -307,7 +313,7 @@ class OCRProcessor:
                         self.processed_files.append({
                             "file": str(file_path.resolve()),
                             "size": file_path.stat().st_size,
-                            "output": str(output_path / f"{base_name}.md")
+                            "output": str(output_path / base_name / f"{base_name}.md")
                         })
                     except Exception as e:
                         console.print(f"[red]Error saving results for {file_path.name}: {e}[/red]")
@@ -342,8 +348,8 @@ class OCRProcessor:
             existing_files_set = {str(Path(item["file"]).resolve()) for item in existing_metadata["files_processed"]}
 
             if str(input_path.resolve()) in existing_files_set and not reprocess:
-                base_name = sanitize_filename(input_path.stem, max_length=None)
-                output_file = output_dir / f"{base_name}.md"
+                base_name = make_unique_basename(input_path)
+                output_file = output_dir / base_name / f"{base_name}.md"
                 console.print(f"[yellow]File already processed: {input_path.name}[/yellow]")
                 console.print(f"[dim]Output exists at: {output_file}[/dim]")
                 console.print("[dim]Use --reprocess to force reprocessing.[/dim]")
@@ -361,7 +367,7 @@ class OCRProcessor:
                 self.processed_files.append({
                     "file": str(input_path.resolve()),
                     "size": input_path.stat().st_size,
-                    "output": str(output_dir / f"{base_name}.md")
+                    "output": str(output_dir / base_name / f"{base_name}.md")
                 })
                 
                 # Save metadata
