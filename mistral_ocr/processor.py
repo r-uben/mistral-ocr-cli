@@ -203,10 +203,15 @@ class OCRProcessor:
                     images_dir.mkdir(parents=True, exist_ok=True)
 
                     for idx, image in enumerate(page.images):
-                        if hasattr(image, 'base64') and image.base64:
-                            image_filename = f"{base_name}_page{page.index + 1}_img{idx + 1}.png"
+                        # SDK uses 'image_base64', not 'base64'
+                        b64_data = getattr(image, 'image_base64', None) or getattr(image, 'base64', None)
+                        if b64_data:
+                            img_id = getattr(image, 'id', None) or f"img{idx + 1}"
+                            # Use original extension from id if available (e.g. img-0.jpeg)
+                            img_ext = Path(img_id).suffix if '.' in str(img_id) else '.png'
+                            image_filename = f"{base_name}_page{page.index + 1}_img{idx + 1}{img_ext}"
                             image_path = images_dir / image_filename
-                            save_base64_image(image.base64, image_path)
+                            save_base64_image(b64_data, image_path)
                             markdown_content.append(f"![Image {idx + 1}](./extracted_images/{image_filename})\n\n")
 
                 # Footer (OCR 3)
