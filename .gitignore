@@ -91,6 +91,9 @@ test_env/
 poetry.lock
 .poetry/
 
+# uv
+uv.lock
+
 # pip
 pip-log.txt
 pip-delete-this-directory.txt
@@ -144,9 +147,11 @@ samples/
 !examples/*.jpg
 !docs/samples/*
 
-# Test scripts
-test_*.py
-*_test.py
+# Test scripts (root-level only, not tests/ directory)
+/test_*.py
+/*_test.py
+!tests/test_*.py
+!tests/*_test.py
 scratch.py
 debug.py
 temp.py
