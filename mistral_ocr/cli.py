@@ -87,6 +87,13 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
     help="Extract page footers (default: False). OCR 3+ only.",
 )
 @click.option(
+    "--workers",
+    "-w",
+    type=click.IntRange(min=1),
+    default=1,
+    help="Number of concurrent workers for batch processing (default: 1)",
+)
+@click.option(
     "--reprocess",
     is_flag=True,
     default=False,
@@ -121,6 +128,7 @@ def main(
     table_format: str | None,
     extract_headers: bool,
     extract_footers: bool,
+    workers: int,
     reprocess: bool,
     dry_run: bool,
     quiet: bool,
@@ -258,6 +266,11 @@ def main(
             and ctx.get_parameter_source("extract_footers") != click.core.ParameterSource.DEFAULT
         ):
             config.extract_footer = extract_footers
+        if (
+            "workers" in ctx.params
+            and ctx.get_parameter_source("workers") != click.core.ParameterSource.DEFAULT
+        ):
+            config.max_workers = workers
 
         config.quiet = quiet
 
