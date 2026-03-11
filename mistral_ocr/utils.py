@@ -5,7 +5,6 @@ import json
 import mimetypes
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 
 def encode_file_to_base64(file_path: Path) -> str:
@@ -54,9 +53,9 @@ def save_base64_image(base64_string: str, output_path: Path) -> None:
 
 def get_supported_files(
     directory: Path,
-    exclude_dirs: Optional[List[str]] = None,
-    exclude_paths: Optional[List[Path]] = None,
-) -> List[Path]:
+    exclude_dirs: list[str] | None = None,
+    exclude_paths: list[Path] | None = None,
+) -> list[Path]:
     """Get all supported files from a directory, excluding output directories.
 
     Args:
@@ -65,8 +64,17 @@ def get_supported_files(
         exclude_paths: Resolved absolute paths to skip (any file underneath is excluded).
     """
     supported_extensions = {
-        ".pdf", ".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff",
-        ".avif", ".docx", ".pptx",
+        ".pdf",
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp",
+        ".gif",
+        ".bmp",
+        ".tiff",
+        ".avif",
+        ".docx",
+        ".pptx",
     }
     if exclude_dirs is None:
         exclude_dirs = ["mistral_ocr_output"]
@@ -90,10 +98,10 @@ def get_supported_files(
 
 
 def determine_output_path(
-    input_path: Path, 
-    output_path: Optional[Path] = None,
+    input_path: Path,
+    output_path: Path | None = None,
     default_folder_name: str = "mistral_ocr_output",
-    add_timestamp: bool = False
+    add_timestamp: bool = False,
 ) -> Path:
     """Determine the output path for OCR results."""
     if output_path:
@@ -101,35 +109,35 @@ def determine_output_path(
             raise ValueError(f"Output path exists and is not a directory: {output_path}")
         output_path.mkdir(parents=True, exist_ok=True)
         return output_path
-    
+
     if input_path.is_file():
         parent_dir = input_path.parent
     else:
         parent_dir = input_path
-    
+
     # Add timestamp if requested
     if add_timestamp:
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         folder_name = f"{default_folder_name}_{timestamp}"
     else:
         folder_name = default_folder_name
-    
+
     output_dir = parent_dir / folder_name
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
 
-def _empty_metadata() -> Dict:
+def _empty_metadata() -> dict:
     return {
         "files_processed": [],
         "total_files": 0,
         "processing_time_seconds": 0,
         "errors": [],
-        "error_count": 0
+        "error_count": 0,
     }
 
 
-def load_metadata(output_dir: Path) -> Dict:
+def load_metadata(output_dir: Path) -> dict:
     """Load existing metadata from JSON file.
 
     Returns empty metadata on missing or corrupt files.
@@ -137,7 +145,7 @@ def load_metadata(output_dir: Path) -> Dict:
     metadata_path = output_dir / "metadata.json"
     if metadata_path.exists():
         try:
-            with open(metadata_path, "r") as f:
+            with open(metadata_path) as f:
                 return json.load(f)
         except (json.JSONDecodeError, KeyError):
             return _empty_metadata()
@@ -146,10 +154,10 @@ def load_metadata(output_dir: Path) -> Dict:
 
 def save_metadata(
     output_dir: Path,
-    files_processed: List[Dict],
+    files_processed: list[dict],
     processing_time: float,
-    errors: List[Dict],
-    base_processing_time: Optional[float] = None
+    errors: list[dict],
+    base_processing_time: float | None = None,
 ) -> None:
     """Save processing metadata to JSON file (append/update mode).
 
@@ -188,9 +196,9 @@ def save_metadata(
         "processing_time_seconds": base_processing_time + processing_time,
         "errors": all_errors,
         "error_count": len(all_errors),
-        "last_updated": time.strftime("%Y-%m-%d %H:%M:%S")
+        "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    
+
     metadata_path = output_dir / "metadata.json"
     tmp_path = metadata_path.with_suffix(".json.tmp")
     with open(tmp_path, "w") as f:
@@ -207,7 +215,7 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size_bytes:.2f} TB"
 
 
-def make_unique_basename(file_path: Path, base_dir: Optional[Path] = None) -> str:
+def make_unique_basename(file_path: Path, base_dir: Path | None = None) -> str:
     """Create a unique base name for output files.
 
     When base_dir is provided (directory mode), includes the relative path
@@ -226,21 +234,21 @@ def make_unique_basename(file_path: Path, base_dir: Optional[Path] = None) -> st
     return sanitize_filename(stem, max_length=200)
 
 
-def sanitize_filename(filename: str, max_length: Optional[int] = None) -> str:
+def sanitize_filename(filename: str, max_length: int | None = None) -> str:
     """Sanitize filename by removing or replacing invalid characters."""
     invalid_chars = '<>:"/\\|?*'
     for char in invalid_chars:
         filename = filename.replace(char, "_")
-    
+
     # Only truncate if max_length is specified
     if max_length is not None:
         # Truncate long filenames but keep extension
-        if len(filename) > max_length and '.' in filename:
-            name, ext = filename.rsplit('.', 1)
+        if len(filename) > max_length and "." in filename:
+            name, ext = filename.rsplit(".", 1)
             if len(name) > max_length - len(ext) - 1:
-                name = name[:max_length - len(ext) - 4] + "..."
+                name = name[: max_length - len(ext) - 4] + "..."
             filename = f"{name}.{ext}"
         elif len(filename) > max_length:
-            filename = filename[:max_length - 3] + "..."
-    
+            filename = filename[: max_length - 3] + "..."
+
     return filename
