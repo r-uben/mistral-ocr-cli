@@ -1,5 +1,6 @@
 """Core OCR processing module using Mistral AI."""
 
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -22,6 +23,7 @@ from .utils import (
     save_metadata,
 )
 
+logger = logging.getLogger(__name__)
 console = Console()
 
 
@@ -70,11 +72,13 @@ class OCRProcessor:
                 if is_last or not self._is_retryable(e):
                     raise
                 delay = base_delay * (2**attempt)
-                if self.config.verbose:
-                    console.print(
-                        f"[yellow]Retryable error (attempt {attempt + 1}/{max_attempts}): "
-                        f"{e}. Retrying in {delay:.1f}s...[/yellow]"
-                    )
+                logger.warning(
+                    "Retryable error (attempt %d/%d): %s. Retrying in %.1fs...",
+                    attempt + 1,
+                    max_attempts,
+                    e,
+                    delay,
+                )
                 time.sleep(delay)
         # Unreachable, but keeps mypy happy
         raise RuntimeError("Retry loop exited unexpectedly")
@@ -84,13 +88,11 @@ class OCRProcessor:
         try:
             # Validate file size
             file_size_mb = file_path.stat().st_size / (1024 * 1024)
-            if self.config.verbose:
-                console.print(f"[dim]File size: {file_size_mb:.2f} MB[/dim]")
+            logger.debug("File size: %.2f MB", file_size_mb)
             self.config.validate_file_size(file_path)
 
             # Create data URI for the file
-            if self.config.verbose:
-                console.print(f"[dim]Creating data URI for {file_path.suffix} file...[/dim]")
+            logger.debug("Creating data URI for %s file...", file_path.suffix)
             data_uri = create_data_uri(file_path)
 
             # Determine document type based on file extension
@@ -107,9 +109,7 @@ class OCRProcessor:
                     "and OCR access enabled for your API key."
                 )
 
-            if self.config.verbose:
-                console.print("[dim]Sending to Mistral OCR API...[/dim]")
-                console.print(f"[dim]Model: {self.config.model}[/dim]")
+            logger.debug("Sending to Mistral OCR API (model=%s)...", self.config.model)
 
             # Build API kwargs (only pass OCR 3 params if set)
             ocr_kwargs = {
@@ -130,12 +130,8 @@ class OCRProcessor:
 
         except Exception as e:
             error_msg = f"Error processing {file_path.name}: {str(e)}"
-            # Always show errors, not just in verbose mode
             console.print(f"[red]{error_msg}[/red]")
-            if self.config.verbose:
-                import traceback
-
-                console.print(f"[dim]{traceback.format_exc()}[/dim]")
+            logger.debug("Traceback for %s", file_path.name, exc_info=True)
             self.errors.append({"file": str(file_path.resolve()), "error": str(e)})
             return None
 
@@ -169,8 +165,7 @@ class OCRProcessor:
         if self.config.save_original_images:
             original_copy = doc_dir / f"{base_name}{file_path.suffix}"
             shutil.copy2(file_path, original_copy)
-            if self.config.verbose:
-                console.print(f"[green]✓[/green] Saved original to {original_copy}")
+            logger.debug("Saved original to %s", original_copy)
 
         markdown_content = []
 
@@ -266,8 +261,7 @@ class OCRProcessor:
         with open(markdown_path, "w", encoding="utf-8") as f:
             f.write("".join(markdown_content))
 
-        if self.config.verbose:
-            console.print(f"[green]✓[/green] Saved results to {markdown_path}")
+        logger.debug("Saved results to %s", markdown_path)
 
     def process_directory(
         self,
@@ -301,8 +295,7 @@ class OCRProcessor:
         for file_path in files:
             if str(file_path.resolve()) in existing_files_set and not reprocess:
                 skipped_files.append(file_path)
-                if self.config.verbose:
-                    console.print(f"[dim]Skipping already processed: {file_path.name}[/dim]")
+                logger.debug("Skipping already processed: %s", file_path.name)
             else:
                 files_to_process.append(file_path)
 
@@ -310,8 +303,7 @@ class OCRProcessor:
             console.print(
                 f"[yellow]Skipping {len(skipped_files)} already processed file(s)[/yellow]"
             )
-            if not self.config.verbose:
-                console.print("[dim]Use --verbose to see which files were skipped[/dim]")
+            console.print("[dim]Use --verbose to see which files were skipped[/dim]")
 
         if not files_to_process:
             console.print(
