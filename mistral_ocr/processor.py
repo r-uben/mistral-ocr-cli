@@ -11,6 +11,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRe
 
 from .config import Config
 from .utils import (
+    DOCUMENT_EXTENSIONS,
     create_data_uri,
     determine_output_path,
     format_file_size,
@@ -93,8 +94,7 @@ class OCRProcessor:
             data_uri = create_data_uri(file_path)
 
             # Determine document type based on file extension
-            doc_extensions = {".pdf", ".docx", ".pptx"}
-            if file_path.suffix.lower() in doc_extensions:
+            if file_path.suffix.lower() in DOCUMENT_EXTENSIONS:
                 document = {"type": "document_url", "document_url": data_uri}
             else:
                 document = {"type": "image_url", "image_url": data_uri}
