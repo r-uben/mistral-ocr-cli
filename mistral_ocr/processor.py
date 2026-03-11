@@ -32,7 +32,7 @@ class OCRProcessor:
         self.config = config
         try:
             self.client = Mistral(api_key=config.api_key)
-        except Exception as e:
+        except (ValueError, TypeError, RuntimeError) as e:
             console.print(f"[red]Failed to initialize Mistral client: {e}[/red]")
             raise
         self.errors: list[dict] = []
@@ -356,7 +356,7 @@ class OCRProcessor:
                                 "output": str(output_path / base_name / f"{base_name}.md"),
                             }
                         )
-                    except Exception as e:
+                    except (OSError, ValueError) as e:
                         console.print(f"[red]Error saving results for {file_path.name}: {e}[/red]")
                         self.errors.append(
                             {"file": str(file_path.resolve()), "error": f"Save failed: {e}"}

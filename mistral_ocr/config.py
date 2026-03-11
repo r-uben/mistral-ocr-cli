@@ -42,17 +42,38 @@ class Config:
         if table_fmt and table_fmt not in ("markdown", "html"):
             table_fmt = None
 
+        try:
+            max_file_size_mb = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
+        except ValueError as e:
+            raise ValueError(
+                f"MAX_FILE_SIZE_MB must be an integer, got: {os.getenv('MAX_FILE_SIZE_MB')!r}"
+            ) from e
+
+        try:
+            max_retries = int(os.getenv("MAX_RETRIES", "3"))
+        except ValueError as e:
+            raise ValueError(
+                f"MAX_RETRIES must be an integer, got: {os.getenv('MAX_RETRIES')!r}"
+            ) from e
+
+        try:
+            retry_base_delay = float(os.getenv("RETRY_BASE_DELAY", "1.0"))
+        except ValueError as e:
+            raise ValueError(
+                f"RETRY_BASE_DELAY must be a number, got: {os.getenv('RETRY_BASE_DELAY')!r}"
+            ) from e
+
         return cls(
             api_key=api_key,
             model=os.getenv("MISTRAL_MODEL", "mistral-ocr-latest"),
-            max_file_size_mb=int(os.getenv("MAX_FILE_SIZE_MB", "50")),
+            max_file_size_mb=max_file_size_mb,
             include_images=os.getenv("INCLUDE_IMAGES", "true").lower() == "true",
             save_original_images=os.getenv("SAVE_ORIGINAL_IMAGES", "true").lower() == "true",
             table_format=table_fmt,
             extract_header=os.getenv("EXTRACT_HEADER", "false").lower() == "true",
             extract_footer=os.getenv("EXTRACT_FOOTER", "false").lower() == "true",
-            max_retries=int(os.getenv("MAX_RETRIES", "3")),
-            retry_base_delay=float(os.getenv("RETRY_BASE_DELAY", "1.0")),
+            max_retries=max_retries,
+            retry_base_delay=retry_base_delay,
             verbose=os.getenv("VERBOSE", "false").lower() == "true",
         )
 
