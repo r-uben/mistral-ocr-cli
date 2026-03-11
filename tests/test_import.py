@@ -25,4 +25,4 @@ def test_version():
     """Test that version is defined."""
     from mistral_ocr import __version__
 
-    assert __version__ == "1.1.1"
+    assert __version__ == "1.2.0"
