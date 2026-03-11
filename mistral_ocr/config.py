@@ -19,6 +19,8 @@ class Config:
     table_format: str | None = None  # None, "markdown", or "html"
     extract_header: bool = False
     extract_footer: bool = False
+    max_retries: int = 3
+    retry_base_delay: float = 1.0
     verbose: bool = False
 
     @classmethod
@@ -49,6 +51,8 @@ class Config:
             table_format=table_fmt,
             extract_header=os.getenv("EXTRACT_HEADER", "false").lower() == "true",
             extract_footer=os.getenv("EXTRACT_FOOTER", "false").lower() == "true",
+            max_retries=int(os.getenv("MAX_RETRIES", "3")),
+            retry_base_delay=float(os.getenv("RETRY_BASE_DELAY", "1.0")),
             verbose=os.getenv("VERBOSE", "false").lower() == "true",
         )
 

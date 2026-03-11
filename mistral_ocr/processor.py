@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from mistralai import Mistral
+from mistralai import models as mistral_models
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
 
@@ -36,6 +37,46 @@ class OCRProcessor:
             raise
         self.errors: list[dict] = []
         self.processed_files: list[dict] = []
+
+    @staticmethod
+    def _is_retryable(error: Exception) -> bool:
+        """Check if an error is transient and worth retrying."""
+        # SDK-typed rate limit / server errors
+        for exc_name in ("RateLimitError", "InternalServerError", "ServiceUnavailableError"):
+            if type(error).__name__ == exc_name:
+                return True
+        # httpx-level HTTP status errors
+        if hasattr(error, "response"):
+            status = getattr(error.response, "status_code", 0)
+            if status in (429, 500, 502, 503, 504):
+                return True
+        # Network-level transient errors
+        if isinstance(error, (TimeoutError, ConnectionError, OSError)):
+            return True
+        # Catch SDK errors that wrap HTTP status codes
+        return hasattr(mistral_models, "SDKError") and isinstance(error, mistral_models.SDKError)
+
+    def _call_with_retry(self, **ocr_kwargs: object) -> object:
+        """Call ocr.process with exponential backoff on transient errors."""
+        max_attempts = self.config.max_retries + 1
+        base_delay = self.config.retry_base_delay
+
+        for attempt in range(max_attempts):
+            try:
+                return self.client.ocr.process(**ocr_kwargs)
+            except Exception as e:
+                is_last = attempt == max_attempts - 1
+                if is_last or not self._is_retryable(e):
+                    raise
+                delay = base_delay * (2**attempt)
+                if self.config.verbose:
+                    console.print(
+                        f"[yellow]Retryable error (attempt {attempt + 1}/{max_attempts}): "
+                        f"{e}. Retrying in {delay:.1f}s...[/yellow]"
+                    )
+                time.sleep(delay)
+        # Unreachable, but keeps mypy happy
+        raise RuntimeError("Retry loop exited unexpectedly")
 
     def process_file(self, file_path: Path) -> dict | None:
         """Process a single file with OCR."""
@@ -83,7 +124,7 @@ class OCRProcessor:
             if self.config.extract_footer:
                 ocr_kwargs["extract_footer"] = True
 
-            response = self.client.ocr.process(**ocr_kwargs)
+            response = self._call_with_retry(**ocr_kwargs)
 
             return {"file_path": file_path, "response": response, "success": True}
 
