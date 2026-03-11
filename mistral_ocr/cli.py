@@ -1,11 +1,13 @@
 """Command-line interface for Mistral OCR."""
 
+import logging
 import os
 import sys
 from pathlib import Path
 
 import click
 from rich.console import Console
+from rich.logging import RichHandler
 
 from . import __version__
 from .config import Config
@@ -89,6 +91,12 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
 )
 @click.option("--quiet", "-q", is_flag=True, help="Suppress all output except errors")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
+@click.option(
+    "--log-file",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Write logs to file (useful for batch processing)",
+)
 @click.version_option(version=__version__, prog_name="mistral-ocr")
 def main(
     input_path: Path,
@@ -106,6 +114,7 @@ def main(
     dry_run: bool,
     quiet: bool,
     verbose: bool,
+    log_file: Path | None,
 ) -> None:
     """
     Mistral OCR - Process documents using Mistral AI's OCR API.
@@ -141,13 +150,25 @@ def main(
         if quiet:
             console.quiet = True
 
+        # Configure logging
+        log_level = logging.DEBUG if verbose else logging.WARNING
+        handlers: list[logging.Handler] = []
+        if not quiet:
+            handlers.append(RichHandler(console=console, show_time=False, show_path=False))
+        if log_file:
+            file_handler = logging.FileHandler(log_file)
+            file_handler.setFormatter(
+                logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+            )
+            file_handler.setLevel(logging.DEBUG)
+            handlers.append(file_handler)
+        logging.basicConfig(level=log_level, handlers=handlers, force=True)
+
         # Print header
         console.print("\n[bold blue]🔍 Mistral OCR[/bold blue]")
         console.print("[dim]Powered by Mistral AI's OCR API[/dim]\n")
 
         # Load configuration
-        if verbose:
-            console.print("[dim]Loading configuration...[/dim]")
 
         # If API key is provided via CLI, set it before loading config
         # (must happen before load_dotenv, which won't override existing vars)
@@ -240,10 +261,7 @@ def main(
         sys.exit(130)
     except Exception as e:
         console.print(f"\n[red]Unexpected error: {e}[/red]\n")
-        if verbose:
-            import traceback
-
-            traceback.print_exc()
+        logging.debug("Unexpected error", exc_info=True)
         sys.exit(1)
 
 
