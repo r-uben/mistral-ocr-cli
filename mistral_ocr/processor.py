@@ -171,23 +171,25 @@ class OCRProcessor:
 
         markdown_content = []
 
-        # File header
-        markdown_content.append("# OCR Results\n\n")
-        markdown_content.append(f"**Original File:** {file_path.name}\n")
-        markdown_content.append(f"**Full Path:** `{file_path}`\n")
-        markdown_content.append(f"**Processed:** {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        # File header (optional metadata block)
+        if self.config.include_metadata:
+            markdown_content.append("# OCR Results\n\n")
+            markdown_content.append(f"**Original File:** {file_path.name}\n")
+            markdown_content.append(f"**Full Path:** `{file_path}`\n")
+            markdown_content.append(f"**Processed:** {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
 
-        if self.config.save_original_images:
-            markdown_content.append(
-                f"**Original:** [{base_name}{file_path.suffix}](./{base_name}{file_path.suffix})\n\n"
-            )
+            if self.config.save_original_images:
+                markdown_content.append(
+                    f"**Original:** [{base_name}{file_path.suffix}](./{base_name}{file_path.suffix})\n\n"
+                )
 
-        markdown_content.append("---\n\n")
+            markdown_content.append("---\n\n")
 
         # Process each page
         if hasattr(response, "pages"):
             for page in response.pages:
-                markdown_content.append(f"## Page {page.index + 1}\n\n")
+                if self.config.include_page_headings:
+                    markdown_content.append(f"## Page {page.index + 1}\n\n")
 
                 # Page dimensions (OCR 3)
                 if hasattr(page, "dimensions") and page.dimensions:
