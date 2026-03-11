@@ -54,6 +54,18 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
     help="Save original input images alongside OCR results (default: True)",
 )
 @click.option(
+    "--metadata/--no-metadata",
+    "include_metadata",
+    default=True,
+    help="Include markdown metadata header block (default: True)",
+)
+@click.option(
+    "--page-headings/--no-page-headings",
+    "include_page_headings",
+    default=True,
+    help="Include markdown headings for each OCR page (default: True)",
+)
+@click.option(
     "--add-timestamp/--no-timestamp",
     default=False,
     help="Add timestamp to output folder name (default: False)",
@@ -103,6 +115,8 @@ def main(
     env_file: Path | None,
     include_images: bool,
     save_originals: bool,
+    include_metadata: bool,
+    include_page_headings: bool,
     add_timestamp: bool,
     table_format: str | None,
     extract_headers: bool,
@@ -213,6 +227,17 @@ def main(
             and ctx.get_parameter_source("save_originals") != click.core.ParameterSource.DEFAULT
         ):
             config.save_original_images = save_originals
+        if (
+            "include_metadata" in ctx.params
+            and ctx.get_parameter_source("include_metadata") != click.core.ParameterSource.DEFAULT
+        ):
+            config.include_metadata = include_metadata
+        if (
+            "include_page_headings" in ctx.params
+            and ctx.get_parameter_source("include_page_headings")
+            != click.core.ParameterSource.DEFAULT
+        ):
+            config.include_page_headings = include_page_headings
         if (
             "verbose" in ctx.params
             and ctx.get_parameter_source("verbose") != click.core.ParameterSource.DEFAULT
