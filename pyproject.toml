@@ -1,6 +1,6 @@
 [project]
 name = "mistral-ocr-cli"
-version = "1.1.1"
+version = "1.2.0"
 description = "A clean command-line tool for OCR processing using Mistral AI's API"
 authors = [{name = "Ruben Fernandez-Fuertes", email = "fernandezfuertesruben@gmail.com"}]
 readme = "README.md"
