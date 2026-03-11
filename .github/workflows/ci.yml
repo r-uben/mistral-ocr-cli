@@ -29,11 +29,11 @@ jobs:
       - name: Lint with ruff
         run: uv run ruff check .
 
-      - name: Check formatting with black
-        run: uv run black --check .
+      - name: Check formatting with ruff
+        run: uv run ruff format --check .
 
-      - name: Run tests
-        run: uv run pytest tests/ -q
+      - name: Run tests with coverage
+        run: uv run pytest tests/ -q --cov=mistral_ocr --cov-report=term-missing
 
   typecheck:
     runs-on: ubuntu-latest
@@ -52,4 +52,4 @@ jobs:
 
       - name: Type check with mypy
         run: uv run mypy mistral_ocr/ --ignore-missing-imports
-        continue-on-error: true  # pre-existing type issues, will enforce once fixed
+        continue-on-error: true
