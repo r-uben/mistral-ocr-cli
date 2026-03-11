@@ -2,6 +2,7 @@
 
 import logging
 import shutil
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -18,17 +19,22 @@ from .utils import (
     create_data_uri,
     determine_output_path,
     format_file_size,
+    get_pdf_page_count,
     get_supported_files,
     load_metadata,
     make_unique_basename,
     save_base64_image,
     save_metadata,
+    split_pdf,
 )
 
 logger = logging.getLogger(__name__)
 
 # Shared console instance — CLI sets .quiet on this directly
 console = Console()
+
+# Mistral API limit: max pages per single OCR request
+MAX_PAGES_PER_REQUEST = 1000
 
 
 class OCRProcessor:
@@ -88,25 +94,100 @@ class OCRProcessor:
         # Unreachable, but keeps mypy happy
         raise RuntimeError("Retry loop exited unexpectedly")
 
+    def _build_ocr_kwargs(self, document: dict) -> dict:
+        """Build common OCR API kwargs."""
+        ocr_kwargs: dict = {
+            "model": self.config.model,
+            "document": document,
+            "include_image_base64": self.config.include_images,
+        }
+        if self.config.table_format:
+            ocr_kwargs["table_format"] = self.config.table_format
+        if self.config.extract_header:
+            ocr_kwargs["extract_header"] = True
+        if self.config.extract_footer:
+            ocr_kwargs["extract_footer"] = True
+        return ocr_kwargs
+
+    def _upload_and_process(self, file_path: Path) -> object:
+        """Upload a file via Mistral files API and process with OCR."""
+        with open(file_path, "rb") as f:
+            uploaded = self.client.files.upload(
+                file={"file_name": file_path.name, "content": f},
+                purpose="ocr",
+            )
+        try:
+            document = {"type": "file", "file_id": uploaded.id}
+            return self._call_with_retry(**self._build_ocr_kwargs(document))
+        finally:
+            try:
+                self.client.files.delete(file_id=uploaded.id)
+            except Exception:
+                logger.debug("Failed to delete uploaded file %s", uploaded.id)
+
+    def _process_pdf(self, file_path: Path) -> object:
+        """Process a PDF, chunking if needed for the API page limit."""
+        page_count = get_pdf_page_count(file_path)
+        max_pages = self.config.max_pages
+        effective_pages = min(page_count, max_pages) if max_pages else page_count
+
+        if effective_pages <= MAX_PAGES_PER_REQUEST:
+            # Small enough — upload directly (may be truncated by max_pages via chunking)
+            if max_pages and page_count > max_pages:
+                logger.debug("Truncating %d-page PDF to %d pages", page_count, max_pages)
+                return self._process_pdf_chunked(file_path, page_count)
+            logger.debug("Uploading PDF directly (%d pages)", page_count)
+            return self._upload_and_process(file_path)
+
+        logger.debug(
+            "PDF has %d pages (processing %d), splitting into chunks of %d",
+            page_count,
+            effective_pages,
+            MAX_PAGES_PER_REQUEST,
+        )
+        return self._process_pdf_chunked(file_path, page_count)
+
+    def _process_pdf_chunked(self, file_path: Path, total_pages: int) -> object:
+        """Split a PDF into chunks, process each, and reassemble pages."""
+        from types import SimpleNamespace
+
+        max_pages = self.config.max_pages
+
+        with tempfile.TemporaryDirectory(prefix="mistral_ocr_") as tmp:
+            chunks = split_pdf(
+                file_path,
+                Path(tmp),
+                max_pages_per_chunk=MAX_PAGES_PER_REQUEST,
+                max_pages=max_pages,
+            )
+
+            all_pages = []
+            for chunk_path, start_page, chunk_count in chunks:
+                logger.debug(
+                    "Processing chunk: pages %d-%d", start_page + 1, start_page + chunk_count
+                )
+                response = self._upload_and_process(chunk_path)
+
+                # Reindex pages to their position in the original document.
+                # We pass through the original page objects to preserve all
+                # OCR 3 fields (tables, headers, footers, hyperlinks, dimensions).
+                for local_idx, page in enumerate(getattr(response, "pages", [])):
+                    page.index = start_page + local_idx
+                    all_pages.append(page)
+
+        result = SimpleNamespace(pages=all_pages)
+
+        # Add truncation note if we limited pages
+        if max_pages and total_pages > max_pages:
+            result.truncated = f"Processed {max_pages} of {total_pages} pages (--max-pages)"
+        return result
+
     def process_file(self, file_path: Path) -> dict | None:
         """Process a single file with OCR."""
         try:
-            # Validate file size
             file_size_mb = file_path.stat().st_size / (1024 * 1024)
             logger.debug("File size: %.2f MB", file_size_mb)
-            self.config.validate_file_size(file_path)
 
-            # Create data URI for the file
-            logger.debug("Creating data URI for %s file...", file_path.suffix)
-            data_uri = create_data_uri(file_path)
-
-            # Determine document type based on file extension
-            if file_path.suffix.lower() in DOCUMENT_EXTENSIONS:
-                document = {"type": "document_url", "document_url": data_uri}
-            else:
-                document = {"type": "image_url", "image_url": data_uri}
-
-            # Process with Mistral OCR
             if not hasattr(self.client, "ocr"):
                 raise AttributeError(
                     "OCR endpoint not available in Mistral client. "
@@ -116,20 +197,17 @@ class OCRProcessor:
 
             logger.debug("Sending to Mistral OCR API (model=%s)...", self.config.model)
 
-            # Build API kwargs (only pass OCR 3 params if set)
-            ocr_kwargs = {
-                "model": self.config.model,
-                "document": document,
-                "include_image_base64": self.config.include_images,
-            }
-            if self.config.table_format:
-                ocr_kwargs["table_format"] = self.config.table_format
-            if self.config.extract_header:
-                ocr_kwargs["extract_header"] = True
-            if self.config.extract_footer:
-                ocr_kwargs["extract_footer"] = True
-
-            response = self._call_with_retry(**ocr_kwargs)
+            if file_path.suffix.lower() == ".pdf":
+                response = self._process_pdf(file_path)
+            else:
+                # Images and other documents: validate size, use data URI
+                self.config.validate_file_size(file_path)
+                data_uri = create_data_uri(file_path)
+                if file_path.suffix.lower() in DOCUMENT_EXTENSIONS:
+                    document = {"type": "document_url", "document_url": data_uri}
+                else:
+                    document = {"type": "image_url", "image_url": data_uri}
+                response = self._call_with_retry(**self._build_ocr_kwargs(document))
 
             return {"file_path": file_path, "response": response, "success": True}
 
@@ -185,6 +263,10 @@ class OCRProcessor:
                 markdown_content.append(
                     f"**Original:** [{base_name}{file_path.suffix}](./{base_name}{file_path.suffix})\n\n"
                 )
+
+            # Truncation note from PDF chunking
+            if hasattr(response, "truncated") and response.truncated:
+                markdown_content.append(f"**Note:** {response.truncated}\n\n")
 
             markdown_content.append("---\n\n")
 

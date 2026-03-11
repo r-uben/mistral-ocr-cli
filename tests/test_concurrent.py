@@ -35,8 +35,8 @@ class TestConcurrentProcessing:
         proc = _make_processor(max_workers=1)
         input_dir = tmp_path / "input"
         input_dir.mkdir()
-        for name in ["a.pdf", "b.pdf", "c.pdf"]:
-            (input_dir / name).write_bytes(b"%PDF-1.4 test")
+        for name in ["a.png", "b.png", "c.png"]:
+            (input_dir / name).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
 
         success, total = proc.process_directory(input_dir)
         assert total == 3
@@ -49,8 +49,8 @@ class TestConcurrentProcessing:
         proc = _make_processor(max_workers=3)
         input_dir = tmp_path / "input"
         input_dir.mkdir()
-        for name in ["a.pdf", "b.pdf", "c.pdf"]:
-            (input_dir / name).write_bytes(b"%PDF-1.4 test")
+        for name in ["a.png", "b.png", "c.png"]:
+            (input_dir / name).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
 
         success, total = proc.process_directory(input_dir)
         assert total == 3
@@ -66,7 +66,7 @@ class TestConcurrentProcessing:
         original_process = proc.process_file
 
         def selective_fail(file_path):
-            if file_path.name == "b.pdf":
+            if file_path.name == "b.png":
                 proc.errors.append({"file": str(file_path), "error": "test error"})
                 return None
             return original_process(file_path)
@@ -75,8 +75,8 @@ class TestConcurrentProcessing:
 
         input_dir = tmp_path / "input"
         input_dir.mkdir()
-        for name in ["a.pdf", "b.pdf", "c.pdf"]:
-            (input_dir / name).write_bytes(b"%PDF-1.4 test")
+        for name in ["a.png", "b.png", "c.png"]:
+            (input_dir / name).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
 
         success, total = proc.process_directory(input_dir)
         assert total == 3
@@ -96,8 +96,8 @@ class TestConcurrentProcessing:
 
         input_dir = tmp_path / "input"
         input_dir.mkdir()
-        for name in ["a.pdf", "b.pdf", "c.pdf"]:
-            (input_dir / name).write_bytes(b"%PDF-1.4 test")
+        for name in ["a.png", "b.png", "c.png"]:
+            (input_dir / name).write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
 
         proc.process_directory(input_dir)
         # With 3 workers and 3 files, we should see more than 1 thread

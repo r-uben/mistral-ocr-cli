@@ -116,8 +116,8 @@ class TestCallWithRetry:
 class TestProcessFileRetry:
     def test_process_file_retries_transient_api_error(self, processor, tmp_path):
         """Integration: process_file retries on transient errors."""
-        pdf = tmp_path / "doc.pdf"
-        pdf.write_bytes(b"%PDF-1.4 fake content")
+        img = tmp_path / "doc.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
 
         mock_response = SimpleNamespace(pages=[])
         processor.client.ocr.process.side_effect = [
@@ -125,7 +125,7 @@ class TestProcessFileRetry:
             mock_response,
         ]
 
-        result = processor.process_file(pdf)
+        result = processor.process_file(img)
         assert result is not None
         assert result["success"] is True
         assert processor.client.ocr.process.call_count == 2

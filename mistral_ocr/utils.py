@@ -90,6 +90,52 @@ def get_supported_files(
     return sorted(files)
 
 
+def get_pdf_page_count(file_path: Path) -> int:
+    """Return the number of pages in a PDF."""
+    from pypdf import PdfReader
+
+    return len(PdfReader(str(file_path)).pages)
+
+
+def split_pdf(
+    file_path: Path,
+    output_dir: Path,
+    *,
+    max_pages_per_chunk: int = 1000,
+    max_pages: int | None = None,
+) -> list[tuple[Path, int, int]]:
+    """Split a PDF into page-bounded chunks.
+
+    Returns a list of (chunk_path, start_page_index, page_count) tuples.
+    """
+    from pypdf import PdfReader, PdfWriter
+
+    reader = PdfReader(str(file_path))
+    total_pages = len(reader.pages)
+    pages_to_process = min(total_pages, max_pages) if max_pages else total_pages
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    chunks: list[tuple[Path, int, int]] = []
+    start = 0
+    chunk_idx = 0
+
+    while start < pages_to_process:
+        end = min(start + max_pages_per_chunk, pages_to_process)
+        writer = PdfWriter()
+        for i in range(start, end):
+            writer.add_page(reader.pages[i])
+
+        chunk_path = output_dir / f"{file_path.stem}_chunk{chunk_idx + 1}.pdf"
+        with open(chunk_path, "wb") as f:
+            writer.write(f)
+
+        chunks.append((chunk_path, start, end - start))
+        start = end
+        chunk_idx += 1
+
+    return chunks
+
+
 def determine_output_path(
     input_path: Path,
     output_path: Path | None = None,
