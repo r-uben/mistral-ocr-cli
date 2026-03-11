@@ -10,6 +10,7 @@ from rich.console import Console
 from . import __version__
 from .config import Config
 from .processor import OCRProcessor
+from .utils import format_file_size, get_supported_files
 
 console = Console()
 
@@ -80,6 +81,13 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
     default=False,
     help="Reprocess files even if they already exist in metadata (default: False)",
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="List files that would be processed without calling the API",
+)
+@click.option("--quiet", "-q", is_flag=True, help="Suppress all output except errors")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
 @click.version_option(version=__version__, prog_name="mistral-ocr")
 def main(
@@ -95,6 +103,8 @@ def main(
     extract_headers: bool,
     extract_footers: bool,
     reprocess: bool,
+    dry_run: bool,
+    quiet: bool,
     verbose: bool,
 ) -> None:
     """
@@ -126,6 +136,10 @@ def main(
         # Resolve output path if provided
         if output_path and not output_path.is_absolute():
             output_path = Path(ORIGINAL_CWD) / output_path
+
+        # Quiet mode: suppress non-error output
+        if quiet:
+            console.quiet = True
 
         # Print header
         console.print("\n[bold blue]🔍 Mistral OCR[/bold blue]")
@@ -180,6 +194,26 @@ def main(
             and ctx.get_parameter_source("extract_footers") != click.core.ParameterSource.DEFAULT
         ):
             config.extract_footer = extract_footers
+
+        config.dry_run = dry_run
+        config.quiet = quiet
+
+        # Dry-run: list files that would be processed, then exit
+        if dry_run:
+            if input_path.is_file():
+                size = format_file_size(input_path.stat().st_size)
+                console.print(f"  {input_path.name}  ({size})")
+                console.print("\n[dim]1 file would be processed (dry run)[/dim]")
+            elif input_path.is_dir():
+                files = get_supported_files(input_path)
+                if not files:
+                    console.print("[yellow]No supported files found.[/yellow]")
+                else:
+                    for f in files:
+                        size = format_file_size(f.stat().st_size)
+                        console.print(f"  {f.relative_to(input_path)}  ({size})")
+                    console.print(f"\n[dim]{len(files)} file(s) would be processed (dry run)[/dim]")
+            return
 
         # Create processor
         processor = OCRProcessor(config)

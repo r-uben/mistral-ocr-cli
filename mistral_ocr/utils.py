@@ -6,6 +6,11 @@ import mimetypes
 import time
 from pathlib import Path
 
+# Canonical extension sets — used by processor.py and get_supported_files()
+DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".pptx"}
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff", ".avif"}
+SUPPORTED_EXTENSIONS = DOCUMENT_EXTENSIONS | IMAGE_EXTENSIONS
+
 
 def encode_file_to_base64(file_path: Path) -> str:
     """Encode a file to base64 string."""
@@ -63,19 +68,7 @@ def get_supported_files(
         exclude_dirs: Directory *names* to skip (matched against each path component).
         exclude_paths: Resolved absolute paths to skip (any file underneath is excluded).
     """
-    supported_extensions = {
-        ".pdf",
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".webp",
-        ".gif",
-        ".bmp",
-        ".tiff",
-        ".avif",
-        ".docx",
-        ".pptx",
-    }
+    supported_extensions = SUPPORTED_EXTENSIONS
     if exclude_dirs is None:
         exclude_dirs = ["mistral_ocr_output"]
     files = []

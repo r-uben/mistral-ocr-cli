@@ -21,6 +21,8 @@ class Config:
     extract_footer: bool = False
     max_retries: int = 3
     retry_base_delay: float = 1.0
+    dry_run: bool = False
+    quiet: bool = False
     verbose: bool = False
 
     @classmethod
