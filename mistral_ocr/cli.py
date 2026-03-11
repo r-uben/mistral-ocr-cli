@@ -87,6 +87,12 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
     help="Extract page footers (default: False). OCR 3+ only.",
 )
 @click.option(
+    "--max-pages",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Maximum number of PDF pages to process (default: all pages)",
+)
+@click.option(
     "--workers",
     "-w",
     type=click.IntRange(min=1),
@@ -128,6 +134,7 @@ def main(
     table_format: str | None,
     extract_headers: bool,
     extract_footers: bool,
+    max_pages: int | None,
     workers: int,
     reprocess: bool,
     dry_run: bool,
@@ -271,6 +278,11 @@ def main(
             and ctx.get_parameter_source("workers") != click.core.ParameterSource.DEFAULT
         ):
             config.max_workers = workers
+        if (
+            "max_pages" in ctx.params
+            and ctx.get_parameter_source("max_pages") != click.core.ParameterSource.DEFAULT
+        ):
+            config.max_pages = max_pages
 
         config.quiet = quiet
 

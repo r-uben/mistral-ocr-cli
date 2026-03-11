@@ -21,6 +21,7 @@ class Config:
     extract_footer: bool = False
     include_metadata: bool = True
     include_page_headings: bool = True
+    max_pages: int | None = None  # None = no limit
     max_workers: int = 1
     max_retries: int = 3
     retry_base_delay: float = 1.0
@@ -65,6 +66,16 @@ class Config:
         if max_retries < 0:
             raise ValueError(f"MAX_RETRIES must be non-negative, got: {max_retries}")
 
+        max_pages_str = os.getenv("MAX_PAGES", "")
+        max_pages_val: int | None = None
+        if max_pages_str:
+            try:
+                max_pages_val = int(max_pages_str)
+            except ValueError as e:
+                raise ValueError(f"MAX_PAGES must be an integer, got: {max_pages_str!r}") from e
+            if max_pages_val <= 0:
+                raise ValueError(f"MAX_PAGES must be positive, got: {max_pages_val}")
+
         try:
             retry_base_delay = float(os.getenv("RETRY_BASE_DELAY", "1.0"))
         except ValueError as e:
@@ -83,6 +94,7 @@ class Config:
             table_format=table_fmt,
             extract_header=os.getenv("EXTRACT_HEADER", "false").lower() == "true",
             extract_footer=os.getenv("EXTRACT_FOOTER", "false").lower() == "true",
+            max_pages=max_pages_val,
             max_workers=max(1, int(os.getenv("MAX_WORKERS", "1"))),
             max_retries=max_retries,
             retry_base_delay=retry_base_delay,
