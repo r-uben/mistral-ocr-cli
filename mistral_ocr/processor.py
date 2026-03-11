@@ -2,7 +2,9 @@
 
 import logging
 import shutil
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from mistralai import Mistral
@@ -42,6 +44,7 @@ class OCRProcessor:
             raise
         self.errors: list[dict] = []
         self.processed_files: list[dict] = []
+        self._lock = threading.Lock()
 
     @staticmethod
     def _is_retryable(error: Exception) -> bool:
@@ -315,7 +318,10 @@ class OCRProcessor:
             )
             return 0, 0
 
+        workers = self.config.max_workers
         console.print(f"[blue]Processing {len(files_to_process)} file(s)...[/blue]")
+        if workers > 1:
+            console.print(f"[blue]Using {workers} concurrent workers[/blue]")
         console.print(f"[blue]Output directory: {output_path}[/blue]\n")
 
         start_time = time.time()
@@ -333,44 +339,106 @@ class OCRProcessor:
         ) as progress:
             task = progress.add_task("Processing files...", total=len(files_to_process))
 
-            for file_path in files_to_process:
-                file_size = format_file_size(file_path.stat().st_size)
-                progress.update(task, description=f"Processing {file_path.name} ({file_size})...")
-
-                result = self.process_file(file_path)
-                if result:
-                    try:
-                        self.save_results(
-                            result, output_path, is_single_file=False, base_dir=input_dir
-                        )
-                        success_count += 1
-                        base_name = make_unique_basename(file_path, base_dir=input_dir)
-                        self.processed_files.append(
-                            {
-                                "file": str(file_path.resolve()),
-                                "size": file_path.stat().st_size,
-                                "output": str(output_path / base_name / f"{base_name}.md"),
-                            }
-                        )
-                    except (OSError, ValueError) as e:
-                        console.print(f"[red]Error saving results for {file_path.name}: {e}[/red]")
-                        self.errors.append(
-                            {"file": str(file_path.resolve()), "error": f"Save failed: {e}"}
-                        )
-
-                progress.update(task, advance=1)
-
-                # Flush metadata incrementally so progress survives interruptions
-                processing_time = time.time() - start_time
-                save_metadata(
-                    output_path,
-                    self.processed_files,
-                    processing_time,
-                    self.errors,
-                    base_processing_time=base_processing_time,
-                )
+            if workers <= 1:
+                # Sequential processing (original behaviour)
+                for file_path in files_to_process:
+                    file_size = format_file_size(file_path.stat().st_size)
+                    progress.update(
+                        task, description=f"Processing {file_path.name} ({file_size})..."
+                    )
+                    success_count += self._process_and_save(
+                        file_path, output_path, input_dir, base_processing_time, start_time
+                    )
+                    progress.update(task, advance=1)
+            else:
+                # Concurrent processing
+                with ThreadPoolExecutor(max_workers=workers) as executor:
+                    futures = {
+                        executor.submit(self.process_file, fp): fp for fp in files_to_process
+                    }
+                    for future in as_completed(futures):
+                        file_path = futures[future]
+                        result = future.result()
+                        if result:
+                            with self._lock:
+                                try:
+                                    self.save_results(
+                                        result,
+                                        output_path,
+                                        is_single_file=False,
+                                        base_dir=input_dir,
+                                    )
+                                    success_count += 1
+                                    base_name = make_unique_basename(file_path, base_dir=input_dir)
+                                    self.processed_files.append(
+                                        {
+                                            "file": str(file_path.resolve()),
+                                            "size": file_path.stat().st_size,
+                                            "output": str(
+                                                output_path / base_name / f"{base_name}.md"
+                                            ),
+                                        }
+                                    )
+                                except (OSError, ValueError) as e:
+                                    console.print(
+                                        f"[red]Error saving results for {file_path.name}: {e}[/red]"
+                                    )
+                                    self.errors.append(
+                                        {
+                                            "file": str(file_path.resolve()),
+                                            "error": f"Save failed: {e}",
+                                        }
+                                    )
+                                # Flush metadata under lock
+                                processing_time = time.time() - start_time
+                                save_metadata(
+                                    output_path,
+                                    self.processed_files,
+                                    processing_time,
+                                    self.errors,
+                                    base_processing_time=base_processing_time,
+                                )
+                        progress.update(task, advance=1)
 
         return success_count, len(files_to_process)
+
+    def _process_and_save(
+        self,
+        file_path: Path,
+        output_path: Path,
+        base_dir: Path,
+        base_processing_time: float,
+        start_time: float,
+    ) -> int:
+        """Process a single file and save results. Returns 1 on success, 0 on failure."""
+        result = self.process_file(file_path)
+        if result:
+            try:
+                self.save_results(result, output_path, is_single_file=False, base_dir=base_dir)
+                base_name = make_unique_basename(file_path, base_dir=base_dir)
+                self.processed_files.append(
+                    {
+                        "file": str(file_path.resolve()),
+                        "size": file_path.stat().st_size,
+                        "output": str(output_path / base_name / f"{base_name}.md"),
+                    }
+                )
+            except (OSError, ValueError) as e:
+                console.print(f"[red]Error saving results for {file_path.name}: {e}[/red]")
+                self.errors.append({"file": str(file_path.resolve()), "error": f"Save failed: {e}"})
+                return 0
+
+            # Flush metadata incrementally
+            processing_time = time.time() - start_time
+            save_metadata(
+                output_path,
+                self.processed_files,
+                processing_time,
+                self.errors,
+                base_processing_time=base_processing_time,
+            )
+            return 1
+        return 0
 
     def process(
         self,

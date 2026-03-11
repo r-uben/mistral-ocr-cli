@@ -21,6 +21,7 @@ class Config:
     extract_footer: bool = False
     include_metadata: bool = True
     include_page_headings: bool = True
+    max_workers: int = 1
     max_retries: int = 3
     retry_base_delay: float = 1.0
     dry_run: bool = False
@@ -82,6 +83,7 @@ class Config:
             table_format=table_fmt,
             extract_header=os.getenv("EXTRACT_HEADER", "false").lower() == "true",
             extract_footer=os.getenv("EXTRACT_FOOTER", "false").lower() == "true",
+            max_workers=max(1, int(os.getenv("MAX_WORKERS", "1"))),
             max_retries=max_retries,
             retry_base_delay=retry_base_delay,
             include_metadata=os.getenv("INCLUDE_METADATA", "true").lower() == "true",
