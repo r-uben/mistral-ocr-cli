@@ -95,6 +95,23 @@ def test_config_from_env_invalid_numeric(monkeypatch, env_var, bad_value, expect
         Config.from_env()
 
 
+@pytest.mark.parametrize(
+    "env_var,bad_value,expected_msg",
+    [
+        ("MAX_FILE_SIZE_MB", "0", "MAX_FILE_SIZE_MB must be positive"),
+        ("MAX_FILE_SIZE_MB", "-5", "MAX_FILE_SIZE_MB must be positive"),
+        ("MAX_RETRIES", "-1", "MAX_RETRIES must be non-negative"),
+        ("RETRY_BASE_DELAY", "-0.5", "RETRY_BASE_DELAY must be non-negative"),
+    ],
+)
+def test_config_from_env_negative_values(monkeypatch, env_var, bad_value, expected_msg):
+    """Test Config.from_env rejects negative/zero numeric env vars."""
+    monkeypatch.setenv("MISTRAL_API_KEY", "key")
+    monkeypatch.setenv(env_var, bad_value)
+    with pytest.raises(ValueError, match=expected_msg):
+        Config.from_env()
+
+
 def test_validate_file_size(tmp_path):
     """Test file size validation."""
     config = Config(api_key="key", max_file_size_mb=1)

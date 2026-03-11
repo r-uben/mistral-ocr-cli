@@ -6,15 +6,12 @@ import sys
 from pathlib import Path
 
 import click
-from rich.console import Console
 from rich.logging import RichHandler
 
 from . import __version__
 from .config import Config
-from .processor import OCRProcessor
+from .processor import OCRProcessor, console
 from .utils import format_file_size, get_supported_files
-
-console = Console()
 
 # Get the original working directory if set
 ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
@@ -146,11 +143,11 @@ def main(
         if output_path and not output_path.is_absolute():
             output_path = Path(ORIGINAL_CWD) / output_path
 
-        # Quiet mode: suppress non-error output
+        # Quiet mode: suppress non-error output (uses processor's shared console)
         if quiet:
             console.quiet = True
 
-        # Configure logging
+        # Configure logging — use verbose flag now, may upgrade later from config
         log_level = logging.DEBUG if verbose else logging.WARNING
         handlers: list[logging.Handler] = []
         if not quiet:
@@ -168,7 +165,24 @@ def main(
         console.print("\n[bold blue]🔍 Mistral OCR[/bold blue]")
         console.print("[dim]Powered by Mistral AI's OCR API[/dim]\n")
 
-        # Load configuration
+        # Dry-run: list files that would be processed, then exit (no API key needed)
+        if dry_run:
+            if input_path.is_file():
+                size = format_file_size(input_path.stat().st_size)
+                console.print(f"  {input_path.name}  ({size})")
+                console.print("\n[dim]1 file would be processed (dry run)[/dim]")
+            elif input_path.is_dir():
+                files = get_supported_files(input_path)
+                if not files:
+                    console.print("[yellow]No supported files found.[/yellow]")
+                else:
+                    for f in files:
+                        size = format_file_size(f.stat().st_size)
+                        console.print(f"  {f.relative_to(input_path)}  ({size})")
+                    console.print(f"\n[dim]{len(files)} file(s) would be processed (dry run)[/dim]")
+            return
+
+        # Load configuration (requires API key — after dry-run check)
 
         # If API key is provided via CLI, set it before loading config
         # (must happen before load_dotenv, which won't override existing vars)
@@ -177,6 +191,10 @@ def main(
 
         # Create config from environment
         config = Config.from_env(env_file)
+
+        # If config has VERBOSE=true but CLI didn't pass --verbose, upgrade log level
+        if config.verbose and not verbose:
+            logging.getLogger().setLevel(logging.DEBUG)
 
         # Only override config with CLI options that were explicitly passed
         ctx = click.get_current_context()
@@ -216,25 +234,7 @@ def main(
         ):
             config.extract_footer = extract_footers
 
-        config.dry_run = dry_run
         config.quiet = quiet
-
-        # Dry-run: list files that would be processed, then exit
-        if dry_run:
-            if input_path.is_file():
-                size = format_file_size(input_path.stat().st_size)
-                console.print(f"  {input_path.name}  ({size})")
-                console.print("\n[dim]1 file would be processed (dry run)[/dim]")
-            elif input_path.is_dir():
-                files = get_supported_files(input_path)
-                if not files:
-                    console.print("[yellow]No supported files found.[/yellow]")
-                else:
-                    for f in files:
-                        size = format_file_size(f.stat().st_size)
-                        console.print(f"  {f.relative_to(input_path)}  ({size})")
-                    console.print(f"\n[dim]{len(files)} file(s) would be processed (dry run)[/dim]")
-            return
 
         # Create processor
         processor = OCRProcessor(config)
