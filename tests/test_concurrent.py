@@ -2,7 +2,7 @@
 
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from mistral_ocr.config import Config
 from mistral_ocr.processor import OCRProcessor
