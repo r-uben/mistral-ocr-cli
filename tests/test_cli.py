@@ -57,6 +57,26 @@ class TestDryRun:
             assert result.exit_code == 0
             mock.assert_not_called()
 
+    def test_dry_run_works_without_api_key(self, runner, tmp_path, monkeypatch):
+        """Dry-run must not require MISTRAL_API_KEY."""
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4 test")
+
+        result = runner.invoke(main, [str(pdf), "--dry-run"])
+        assert result.exit_code == 0
+        assert "doc.pdf" in result.output
+        assert "dry run" in result.output
+
+    def test_dry_run_directory_without_api_key(self, runner, tmp_path, monkeypatch):
+        """Dry-run on a directory must not require MISTRAL_API_KEY."""
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        (tmp_path / "a.pdf").write_bytes(b"%PDF")
+
+        result = runner.invoke(main, [str(tmp_path), "--dry-run"])
+        assert result.exit_code == 0
+        assert "a.pdf" in result.output
+
 
 class TestQuiet:
     def test_quiet_suppresses_output(self, runner, tmp_path, monkeypatch):
@@ -74,3 +94,24 @@ class TestQuiet:
             # Quiet mode: no banner, no completion message
             assert "Mistral OCR" not in result.output
             assert "Processing complete" not in result.output
+
+    def test_quiet_propagates_to_processor_console(self, runner, tmp_path, monkeypatch):
+        """Quiet flag must set .quiet on the shared processor console."""
+        _make_env(monkeypatch)
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4 test")
+
+        with patch("mistral_ocr.cli.OCRProcessor") as mock_cls:
+            mock_proc = mock_cls.return_value
+            mock_proc.errors = []
+            mock_proc.process.return_value = None
+
+            runner.invoke(main, [str(pdf), "--quiet"])
+
+            # The console imported from processor should be quiet
+            from mistral_ocr.processor import console as proc_console
+
+            assert proc_console.quiet is True
+
+            # Reset for other tests
+            proc_console.quiet = False

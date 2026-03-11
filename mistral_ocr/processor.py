@@ -24,6 +24,8 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Shared console instance — CLI sets .quiet on this directly
 console = Console()
 
 
@@ -401,22 +403,31 @@ class OCRProcessor:
             result = self.process_file(input_path)
 
             if result:
-                self.save_results(result, output_dir, is_single_file=True)
-                base_name = make_unique_basename(input_path)
-                self.processed_files.append(
-                    {
-                        "file": str(input_path.resolve()),
-                        "size": input_path.stat().st_size,
-                        "output": str(output_dir / base_name / f"{base_name}.md"),
-                    }
-                )
+                try:
+                    self.save_results(result, output_dir, is_single_file=True)
+                    base_name = make_unique_basename(input_path)
+                    self.processed_files.append(
+                        {
+                            "file": str(input_path.resolve()),
+                            "size": input_path.stat().st_size,
+                            "output": str(output_dir / base_name / f"{base_name}.md"),
+                        }
+                    )
+                except (OSError, ValueError) as e:
+                    console.print(f"[red]Error saving results for {input_path.name}: {e}[/red]")
+                    self.errors.append(
+                        {"file": str(input_path.resolve()), "error": f"Save failed: {e}"}
+                    )
 
                 # Save metadata
                 processing_time = time.time() - start_time
                 save_metadata(output_dir, self.processed_files, processing_time, self.errors)
 
-                console.print("\n[green]✓ Successfully processed 1 file[/green]")
-                console.print(f"[dim]Processing time: {processing_time:.2f} seconds[/dim]")
+                if self.errors:
+                    console.print("\n[red]✗ Failed to save results[/red]")
+                else:
+                    console.print("\n[green]✓ Successfully processed 1 file[/green]")
+                    console.print(f"[dim]Processing time: {processing_time:.2f} seconds[/dim]")
             else:
                 console.print("\n[red]✗ Failed to process file[/red]")
 

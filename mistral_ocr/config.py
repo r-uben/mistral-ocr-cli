@@ -50,6 +50,8 @@ class Config:
             raise ValueError(
                 f"MAX_FILE_SIZE_MB must be an integer, got: {os.getenv('MAX_FILE_SIZE_MB')!r}"
             ) from e
+        if max_file_size_mb <= 0:
+            raise ValueError(f"MAX_FILE_SIZE_MB must be positive, got: {max_file_size_mb}")
 
         try:
             max_retries = int(os.getenv("MAX_RETRIES", "3"))
@@ -57,6 +59,8 @@ class Config:
             raise ValueError(
                 f"MAX_RETRIES must be an integer, got: {os.getenv('MAX_RETRIES')!r}"
             ) from e
+        if max_retries < 0:
+            raise ValueError(f"MAX_RETRIES must be non-negative, got: {max_retries}")
 
         try:
             retry_base_delay = float(os.getenv("RETRY_BASE_DELAY", "1.0"))
@@ -64,6 +68,8 @@ class Config:
             raise ValueError(
                 f"RETRY_BASE_DELAY must be a number, got: {os.getenv('RETRY_BASE_DELAY')!r}"
             ) from e
+        if retry_base_delay < 0:
+            raise ValueError(f"RETRY_BASE_DELAY must be non-negative, got: {retry_base_delay}")
 
         return cls(
             api_key=api_key,
