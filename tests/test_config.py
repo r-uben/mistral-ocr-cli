@@ -79,6 +79,22 @@ def test_config_from_env_invalid_table_format(monkeypatch):
     assert config.table_format is None
 
 
+@pytest.mark.parametrize(
+    "env_var,bad_value,expected_msg",
+    [
+        ("MAX_FILE_SIZE_MB", "abc", "MAX_FILE_SIZE_MB must be an integer"),
+        ("MAX_RETRIES", "not_a_number", "MAX_RETRIES must be an integer"),
+        ("RETRY_BASE_DELAY", "xyz", "RETRY_BASE_DELAY must be a number"),
+    ],
+)
+def test_config_from_env_invalid_numeric(monkeypatch, env_var, bad_value, expected_msg):
+    """Test Config.from_env raises on non-numeric env vars."""
+    monkeypatch.setenv("MISTRAL_API_KEY", "key")
+    monkeypatch.setenv(env_var, bad_value)
+    with pytest.raises(ValueError, match=expected_msg):
+        Config.from_env()
+
+
 def test_validate_file_size(tmp_path):
     """Test file size validation."""
     config = Config(api_key="key", max_file_size_mb=1)
