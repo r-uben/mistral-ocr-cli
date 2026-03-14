@@ -7,7 +7,19 @@
 
 A command-line tool for OCR processing using Mistral AI's OCR API. Process PDFs and images to extract text, tables, equations, and images.
 
-> **Disclaimer:** This is an unofficial, community-created tool. Not affiliated with or endorsed by [Mistral AI](https://mistral.ai). For official tools, see the [Mistral OCR docs](https://docs.mistral.ai/capabilities/OCR/).
+> **Disclaimer:** This is an unofficial, community-created tool. Not affiliated with or endorsed by [Mistral AI](https://mistral.ai). For official tools, see the [Mistral Document AI docs](https://docs.mistral.ai/capabilities/document_ai/basic_ocr).
+
+## Choosing an OCR tool
+
+This is one of five OCR CLI tools with a shared design: clean Markdown output, batch processing, and figure extraction. Pick based on your constraints:
+
+| Tool | Engine | Runs | Cost | Best for |
+|------|--------|------|------|----------|
+| [deepseek-ocr-cli](https://github.com/r-uben/deepseek-ocr-cli) | DeepSeek vision | Local (Ollama / vLLM) | Free | General-purpose local OCR with multi-backend flexibility |
+| [gemini-ocr-cli](https://github.com/r-uben/gemini-ocr-cli) | Google Gemini | Cloud API | Free tier / Pay-per-use | Fast cloud OCR with concurrent processing |
+| [marker-ocr-cli](https://github.com/r-uben/marker-ocr-cli) | Marker (Surya + Texify) | Local | Free | Academic papers with equations, tables, complex layouts |
+| **mistral-ocr-cli** (this repo) | Mistral OCR API | Cloud API | ~$1/1k pages | Structured extraction (tables, headers, footers) |
+| [nougat-ocr-cli](https://github.com/r-uben/nougat-ocr-cli) | Meta Nougat | Local (GPU) | Free | Academic papers, GPU-accelerated batch processing |
 
 ## Installation
 
