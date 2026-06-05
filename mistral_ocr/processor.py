@@ -629,8 +629,11 @@ class OCRProcessor:
 
         start_time = time.time()
         with self._progress(total=len(files_to_process)) as progress:
-            task = progress.add_task("Processing files...", total=len(files_to_process)) \
-                if progress is not None else None
+            task = (
+                progress.add_task("Processing files...", total=len(files_to_process))
+                if progress is not None
+                else None
+            )
 
             if workers <= 1:
                 for file_path, rel_key in files_to_process:

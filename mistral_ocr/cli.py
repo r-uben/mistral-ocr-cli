@@ -110,7 +110,9 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
 @click.option("--metadata/--no-metadata", "include_metadata", default=None, hidden=True)
 @click.option("--page-headings/--no-page-headings", "page_headings", default=None, hidden=True)
 @click.option("--add-timestamp/--no-timestamp", default=None, hidden=True)
-@click.option("--quiet", "-q", is_flag=True, help="Suppress output except file paths (for scripting)")
+@click.option(
+    "--quiet", "-q", is_flag=True, help="Suppress output except file paths (for scripting)"
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
 @click.option(
     "--log-file",

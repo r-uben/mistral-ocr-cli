@@ -87,9 +87,7 @@ def test_multipage_conforms_no_whole_doc_dump(tmp_path: Path) -> None:
     img.write_bytes(_PNG_1x1)
 
     def responder(_kwargs):
-        return SimpleNamespace(
-            pages=[_page(0, "PAGE-1-CONTENT"), _page(1, "PAGE-2-CONTENT")]
-        )
+        return SimpleNamespace(pages=[_page(0, "PAGE-1-CONTENT"), _page(1, "PAGE-2-CONTENT")])
 
     proc = FakeMistralProcessor.make(responder, include_images=False)
     outcome = proc.process(img, output_path=tmp_path / "out")
