@@ -12,7 +12,6 @@ def test_config_defaults():
     assert config.model == "mistral-ocr-latest"
     assert config.max_file_size_mb == 50
     assert config.include_images is True
-    assert config.save_original_images is True
     assert config.table_format is None
     assert config.extract_header is False
     assert config.extract_footer is False

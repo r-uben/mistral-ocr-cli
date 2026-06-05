@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
+from ocr_output_contract import RunOutcome, Status
 
 from mistral_ocr.cli import main
 
@@ -86,14 +87,16 @@ class TestQuiet:
 
         with patch("mistral_ocr.cli.OCRProcessor") as mock_cls:
             mock_proc = mock_cls.return_value
-            mock_proc.errors = []
-            mock_proc.process.return_value = None
+            outcome = RunOutcome()
+            outcome.add(Status.COMPLETED, output_path=str(tmp_path / "out.md"))
+            mock_proc.process.return_value = outcome
 
             result = runner.invoke(main, [str(pdf), "--quiet"])
             assert result.exit_code == 0
-            # Quiet mode: no banner, no completion message
+            # Quiet mode: no banner, no completion message; only the output path.
             assert "Mistral OCR" not in result.output
             assert "Processing complete" not in result.output
+            assert str(tmp_path / "out.md") in result.output
 
     def test_quiet_propagates_to_processor_console(self, runner, tmp_path, monkeypatch):
         """Quiet flag must set .quiet on the shared processor console."""
@@ -103,8 +106,7 @@ class TestQuiet:
 
         with patch("mistral_ocr.cli.OCRProcessor") as mock_cls:
             mock_proc = mock_cls.return_value
-            mock_proc.errors = []
-            mock_proc.process.return_value = None
+            mock_proc.process.return_value = RunOutcome()
 
             runner.invoke(main, [str(pdf), "--quiet"])
 

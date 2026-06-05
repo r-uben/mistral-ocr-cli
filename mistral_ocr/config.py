@@ -9,23 +9,26 @@ from dotenv import load_dotenv
 
 @dataclass
 class Config:
-    """Configuration for Mistral OCR."""
+    """Configuration for Mistral OCR.
+
+    The markdown body is owned by the canonical output contract: it is always
+    clean (``## Page N`` headers, no ``# OCR Results`` block, no YAML
+    frontmatter) and never copies the original input. The old
+    ``save_original_images`` / ``include_metadata`` / ``include_page_headings``
+    knobs are therefore gone; provenance lives only in the JSON sidecars.
+    """
 
     api_key: str
     model: str = "mistral-ocr-latest"
     max_file_size_mb: int = 50
     include_images: bool = True
-    save_original_images: bool = True
     table_format: str | None = None  # None, "markdown", or "html"
     extract_header: bool = False
     extract_footer: bool = False
-    include_metadata: bool = True
-    include_page_headings: bool = True
     max_pages: int | None = None  # None = no limit
     max_workers: int = 1
     max_retries: int = 3
     retry_base_delay: float = 1.0
-    dry_run: bool = False
     quiet: bool = False
     verbose: bool = False
 
@@ -90,7 +93,6 @@ class Config:
             model=os.getenv("MISTRAL_MODEL", "mistral-ocr-latest"),
             max_file_size_mb=max_file_size_mb,
             include_images=os.getenv("INCLUDE_IMAGES", "true").lower() == "true",
-            save_original_images=os.getenv("SAVE_ORIGINAL_IMAGES", "true").lower() == "true",
             table_format=table_fmt,
             extract_header=os.getenv("EXTRACT_HEADER", "false").lower() == "true",
             extract_footer=os.getenv("EXTRACT_FOOTER", "false").lower() == "true",
@@ -98,8 +100,6 @@ class Config:
             max_workers=max(1, int(os.getenv("MAX_WORKERS", "1"))),
             max_retries=max_retries,
             retry_base_delay=retry_base_delay,
-            include_metadata=os.getenv("INCLUDE_METADATA", "true").lower() == "true",
-            include_page_headings=os.getenv("INCLUDE_PAGE_HEADINGS", "true").lower() == "true",
             verbose=os.getenv("VERBOSE", "false").lower() == "true",
         )
 

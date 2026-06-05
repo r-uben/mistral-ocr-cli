@@ -115,7 +115,7 @@ class TestConfigMaxPages:
 
 
 def _make_processor(**overrides: object) -> OCRProcessor:
-    defaults = {"api_key": "test-key", "include_images": False, "save_original_images": False}
+    defaults = {"api_key": "test-key", "include_images": False}
     defaults.update(overrides)
     config = Config(**defaults)
     with patch("mistral_ocr.processor.Mistral"):
@@ -127,37 +127,54 @@ def _fake_page(index: int) -> SimpleNamespace:
 
 
 class TestProcessPdf:
-    """Test _process_pdf routing logic with mocked upload."""
+    """Test _process_pdf routing logic with mocked upload.
+
+    The PDF must exist on disk: _process_pdf now validates file size first
+    (audit LOW fix — MAX_FILE_SIZE_MB is enforced for PDFs too, not only the
+    non-PDF branch). get_pdf_page_count is mocked, so the file's real page
+    count is irrelevant; only its existence + size matter.
+    """
 
     @patch("mistral_ocr.processor.get_pdf_page_count", return_value=5)
-    def test_small_pdf_uploads_directly(self, mock_count: MagicMock) -> None:
+    def test_small_pdf_uploads_directly(self, mock_count: MagicMock, tmp_path: Path) -> None:
+        pdf = _make_pdf(tmp_path / "test.pdf", 1)
         proc = _make_processor()
         proc._upload_and_process = MagicMock(
             return_value=SimpleNamespace(pages=[_fake_page(i) for i in range(5)])
         )
-        result = proc._process_pdf(Path("test.pdf"))
-        proc._upload_and_process.assert_called_once_with(Path("test.pdf"))
+        result = proc._process_pdf(pdf)
+        proc._upload_and_process.assert_called_once_with(pdf)
         assert len(result.pages) == 5
 
     @patch("mistral_ocr.processor.get_pdf_page_count", return_value=5)
-    def test_max_pages_triggers_chunking(self, mock_count: MagicMock) -> None:
+    def test_max_pages_triggers_chunking(self, mock_count: MagicMock, tmp_path: Path) -> None:
+        pdf = _make_pdf(tmp_path / "test.pdf", 1)
         proc = _make_processor(max_pages=3)
         proc._process_pdf_chunked = MagicMock(
             return_value=SimpleNamespace(pages=[_fake_page(i) for i in range(3)])
         )
-        result = proc._process_pdf(Path("test.pdf"))
-        proc._process_pdf_chunked.assert_called_once_with(Path("test.pdf"), 5)
+        result = proc._process_pdf(pdf)
+        proc._process_pdf_chunked.assert_called_once_with(pdf, 5)
         assert len(result.pages) == 3
 
     @patch("mistral_ocr.processor.get_pdf_page_count", return_value=1500)
-    def test_large_pdf_triggers_chunking(self, mock_count: MagicMock) -> None:
+    def test_large_pdf_triggers_chunking(self, mock_count: MagicMock, tmp_path: Path) -> None:
+        pdf = _make_pdf(tmp_path / "test.pdf", 1)
         proc = _make_processor()
         proc._process_pdf_chunked = MagicMock(
             return_value=SimpleNamespace(pages=[_fake_page(i) for i in range(1500)])
         )
-        result = proc._process_pdf(Path("test.pdf"))
-        proc._process_pdf_chunked.assert_called_once_with(Path("test.pdf"), 1500)
+        result = proc._process_pdf(pdf)
+        proc._process_pdf_chunked.assert_called_once_with(pdf, 1500)
         assert len(result.pages) == 1500
+
+    @patch("mistral_ocr.processor.get_pdf_page_count", return_value=1)
+    def test_oversized_pdf_rejected(self, mock_count: MagicMock, tmp_path: Path) -> None:
+        """Audit LOW fix: MAX_FILE_SIZE_MB is enforced for the PDF branch too."""
+        pdf = _make_pdf(tmp_path / "big.pdf", 1)
+        proc = _make_processor(max_file_size_mb=0.000001)  # any real file exceeds this
+        with pytest.raises(ValueError, match="exceeds maximum allowed size"):
+            proc._process_pdf(pdf)
 
 
 class TestProcessPdfChunked:

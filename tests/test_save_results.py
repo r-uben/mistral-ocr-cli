@@ -1,280 +1,180 @@
-"""Tests for save_results rendering: OCR 3 features, images, truncation, originals."""
+"""Tests for mistral-specific page rendering and figure extraction.
 
-import base64
+The output *shape* (layout, page assembly, metadata, figure naming) is owned by
+``ocr-output-contract`` and is exercised end-to-end in
+``tests/test_output_contract.py`` via the package's conformance harness. What
+stays here is the mistral-owned glue: how one API page's OCR 3 extras
+(dimensions, header/footer, hyperlinks) fold into a single page body, and how
+embedded base64 images become canonically-named PNG figures with resolving
+links.
+
+These call the real :class:`OCRProcessor` methods directly with a stub config
+(no Mistral client), so they need no API key.
+"""
+
 from types import SimpleNamespace
 
 from mistral_ocr.config import Config
-from mistral_ocr.processor import OCRProcessor
+from mistral_ocr.processor import OCRProcessor, OCRResult
 
 
-def _make_processor(**config_kwargs):
+def _proc(**config_kwargs):
+    """An OCRProcessor with a stub config and no live Mistral client."""
     proc = OCRProcessor.__new__(OCRProcessor)
-    config_kwargs.setdefault("save_original_images", False)
     proc.config = Config(api_key="test", **config_kwargs)
-    proc.errors = []
-    proc.processed_files = []
     return proc
 
 
 def _page(index=0, markdown="text", **kwargs):
-    return SimpleNamespace(index=index, markdown=markdown, images=[], **kwargs)
-
-
-def _result(tmp_path, response, name="doc.pdf"):
-    fp = tmp_path / name
-    fp.write_bytes(b"%PDF-1.4 fake")
-    return {"file_path": fp, "response": response}
+    kwargs.setdefault("images", [])
+    return SimpleNamespace(index=index, markdown=markdown, **kwargs)
 
 
 # ---------------------------------------------------------------------------
-# Original file copy
-# ---------------------------------------------------------------------------
-
-
-class TestSaveOriginals:
-    def test_copies_original_when_enabled(self, tmp_path):
-        proc = _make_processor(save_original_images=True)
-        out = tmp_path / "out"
-        out.mkdir()
-        res = _result(tmp_path, SimpleNamespace(pages=[_page()]))
-        proc.save_results(res, out)
-        assert (out / "doc" / "doc.pdf").exists()
-
-    def test_skips_copy_when_disabled(self, tmp_path):
-        proc = _make_processor(save_original_images=False)
-        out = tmp_path / "out"
-        out.mkdir()
-        res = _result(tmp_path, SimpleNamespace(pages=[_page()]))
-        proc.save_results(res, out)
-        assert not (out / "doc" / "doc.pdf").exists()
-
-    def test_original_link_in_metadata(self, tmp_path):
-        proc = _make_processor(save_original_images=True, include_metadata=True)
-        out = tmp_path / "out"
-        out.mkdir()
-        res = _result(tmp_path, SimpleNamespace(pages=[_page()]))
-        proc.save_results(res, out)
-        md = (out / "doc" / "doc.md").read_text()
-        assert "**Original:**" in md
-        assert "doc.pdf" in md
-
-
-# ---------------------------------------------------------------------------
-# Truncation note
-# ---------------------------------------------------------------------------
-
-
-class TestTruncationNote:
-    def test_truncation_note_rendered(self, tmp_path):
-        proc = _make_processor(include_metadata=True)
-        out = tmp_path / "out"
-        out.mkdir()
-        response = SimpleNamespace(
-            pages=[_page()], truncated="Processed 50 of 200 pages (--max-pages)"
-        )
-        res = _result(tmp_path, response)
-        proc.save_results(res, out)
-        md = (out / "doc" / "doc.md").read_text()
-        assert "**Note:** Processed 50 of 200" in md
-
-    def test_no_truncation_note_when_absent(self, tmp_path):
-        proc = _make_processor(include_metadata=True)
-        out = tmp_path / "out"
-        out.mkdir()
-        res = _result(tmp_path, SimpleNamespace(pages=[_page()]))
-        proc.save_results(res, out)
-        md = (out / "doc" / "doc.md").read_text()
-        assert "**Note:**" not in md
-
-
-# ---------------------------------------------------------------------------
-# Page dimensions (OCR 3)
+# Page body rendering (_render_page_markdown): OCR 3 extras folded inline
 # ---------------------------------------------------------------------------
 
 
 class TestPageDimensions:
-    def test_dimensions_rendered(self, tmp_path):
-        proc = _make_processor(include_page_headings=True)
-        out = tmp_path / "out"
-        out.mkdir()
-        dims = SimpleNamespace(width=612, height=792)
-        page = _page(dimensions=dims)
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        md = (out / "doc" / "doc.md").read_text()
-        assert "612 x 792" in md
+    def test_dimensions_rendered(self):
+        page = _page(dimensions=SimpleNamespace(width=612, height=792))
+        body = _proc()._render_page_markdown(page)
+        assert "612 x 792" in body
 
-    def test_no_dimensions_when_absent(self, tmp_path):
-        proc = _make_processor()
-        out = tmp_path / "out"
-        out.mkdir()
-        res = _result(tmp_path, SimpleNamespace(pages=[_page()]))
-        proc.save_results(res, out)
-        md = (out / "doc" / "doc.md").read_text()
-        assert "Page size" not in md
-
-
-# ---------------------------------------------------------------------------
-# Headers and footers (OCR 3)
-# ---------------------------------------------------------------------------
+    def test_no_dimensions_when_absent(self):
+        body = _proc()._render_page_markdown(_page())
+        assert "Page size" not in body
 
 
 class TestHeaderFooter:
-    def test_header_rendered(self, tmp_path):
-        proc = _make_processor()
-        out = tmp_path / "out"
-        out.mkdir()
-        page = _page(header="Chapter 1")
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        md = (out / "doc" / "doc.md").read_text()
-        assert "> **Header:** Chapter 1" in md
+    def test_header_rendered(self):
+        body = _proc()._render_page_markdown(_page(header="Chapter 1"))
+        assert "> **Header:** Chapter 1" in body
 
-    def test_footer_rendered(self, tmp_path):
-        proc = _make_processor()
-        out = tmp_path / "out"
-        out.mkdir()
-        page = _page(footer="Page 1 of 10")
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        md = (out / "doc" / "doc.md").read_text()
-        assert "> **Footer:** Page 1 of 10" in md
+    def test_footer_rendered(self):
+        body = _proc()._render_page_markdown(_page(footer="Page 1 of 10"))
+        assert "> **Footer:** Page 1 of 10" in body
 
-    def test_no_header_when_empty(self, tmp_path):
-        proc = _make_processor()
-        out = tmp_path / "out"
-        out.mkdir()
-        page = _page(header="")
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        md = (out / "doc" / "doc.md").read_text()
-        assert "**Header:**" not in md
-
-
-# ---------------------------------------------------------------------------
-# Tables (OCR 3)
-# ---------------------------------------------------------------------------
-
-
-class TestTables:
-    def test_table_saved_as_markdown(self, tmp_path):
-        proc = _make_processor(table_format="markdown")
-        out = tmp_path / "out"
-        out.mkdir()
-        table = SimpleNamespace(content="| A | B |\n|---|---|\n| 1 | 2 |")
-        page = _page(tables=[table])
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        table_path = out / "doc" / "tables" / "page1_table1.md"
-        assert table_path.exists()
-        assert "| A | B |" in table_path.read_text()
-        md = (out / "doc" / "doc.md").read_text()
-        assert "[Table 1](./tables/page1_table1.md)" in md
-
-    def test_table_saved_as_html(self, tmp_path):
-        proc = _make_processor(table_format="html")
-        out = tmp_path / "out"
-        out.mkdir()
-        table = SimpleNamespace(content="<table><tr><td>1</td></tr></table>")
-        page = _page(tables=[table])
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        table_path = out / "doc" / "tables" / "page1_table1.html"
-        assert table_path.exists()
-        assert "<table>" in table_path.read_text()
-
-    def test_table_falls_back_to_markdown_attr(self, tmp_path):
-        proc = _make_processor(table_format="markdown")
-        out = tmp_path / "out"
-        out.mkdir()
-        table = SimpleNamespace(markdown="| X |")  # no 'content' attr
-        page = _page(tables=[table])
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        assert "| X |" in (out / "doc" / "tables" / "page1_table1.md").read_text()
-
-
-# ---------------------------------------------------------------------------
-# Hyperlinks (OCR 3)
-# ---------------------------------------------------------------------------
+    def test_no_header_when_empty(self):
+        body = _proc()._render_page_markdown(_page(header=""))
+        assert "**Header:**" not in body
 
 
 class TestHyperlinks:
-    def test_hyperlinks_rendered(self, tmp_path):
-        proc = _make_processor()
-        out = tmp_path / "out"
-        out.mkdir()
+    def test_hyperlinks_rendered(self):
         link = SimpleNamespace(text="Example", url="https://example.com")
-        page = _page(hyperlinks=[link])
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        md = (out / "doc" / "doc.md").read_text()
-        assert "**Hyperlinks:**" in md
-        assert "[Example](https://example.com)" in md
+        body = _proc()._render_page_markdown(_page(hyperlinks=[link]))
+        assert "**Hyperlinks:**" in body
+        assert "[Example](https://example.com)" in body
 
-    def test_hyperlink_without_text(self, tmp_path):
-        proc = _make_processor()
-        out = tmp_path / "out"
-        out.mkdir()
+    def test_hyperlink_without_text(self):
         link = SimpleNamespace(text="", url="https://example.com")
-        page = _page(hyperlinks=[link])
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        md = (out / "doc" / "doc.md").read_text()
-        assert "[https://example.com](https://example.com)" in md
+        body = _proc()._render_page_markdown(_page(hyperlinks=[link]))
+        assert "[https://example.com](https://example.com)" in body
 
-    def test_hyperlink_with_href_fallback(self, tmp_path):
-        proc = _make_processor()
-        out = tmp_path / "out"
-        out.mkdir()
+    def test_hyperlink_with_href_fallback(self):
         link = SimpleNamespace(text="Link", href="https://test.com")  # no 'url' attr
-        page = _page(hyperlinks=[link])
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        md = (out / "doc" / "doc.md").read_text()
-        assert "[Link](https://test.com)" in md
+        body = _proc()._render_page_markdown(_page(hyperlinks=[link]))
+        assert "[Link](https://test.com)" in body
+
+
+class TestPageBodyIsCleanBody:
+    def test_body_has_no_page_header(self):
+        """The page body must NOT carry its own ## Page header.
+
+        The contract's assemble_pages adds the canonical ``## Page N`` header,
+        so a doubled header would violate the marker count. The renderer emits
+        only the page body.
+        """
+        body = _proc()._render_page_markdown(_page(markdown="hello"))
+        assert "## Page" not in body
+        assert body.strip() == "hello"
 
 
 # ---------------------------------------------------------------------------
-# Figures / images
+# Figure extraction (_save_figures): canonical figure_<N>_page<P>.png naming
 # ---------------------------------------------------------------------------
+
+# A valid 1x1 PNG so Pillow can open + re-encode it.
+_PNG_1x1 = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06"
+    b"\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00"
+    b"\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
+def _result_with_image(tmp_path, page_no=1, image_bytes=_PNG_1x1):
+    fp = tmp_path / "doc.png"
+    fp.write_bytes(_PNG_1x1)
+    return OCRResult(
+        file_path=fp,
+        pages=["text"],
+        page_images={page_no: [image_bytes]},
+    )
 
 
 class TestFigures:
-    def test_image_saved_and_linked(self, tmp_path):
-        proc = _make_processor(include_images=True)
-        out = tmp_path / "out"
-        out.mkdir()
-        # 1x1 red PNG as base64
-        b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50).decode()
-        img = SimpleNamespace(image_base64=b64, id="fig1.png")
-        page = SimpleNamespace(index=0, markdown="text", images=[img])
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        assert (out / "doc" / "figures" / "page1_img1.png").exists()
-        md = (out / "doc" / "doc.md").read_text()
-        assert "![Image 1](./figures/page1_img1.png)" in md
+    def test_image_saved_with_canonical_name_and_link(self, tmp_path):
+        proc = _proc(include_images=True)
+        doc_dir = tmp_path / "doc"
+        doc_dir.mkdir()
+        result = _result_with_image(tmp_path, page_no=1)
+
+        links = proc._save_figures(result, doc_dir)
+
+        # Canonical naming: figure_<N>_page<P>.png (NOT page1_img1.png).
+        assert (doc_dir / "figures" / "figure_1_page1.png").exists()
+        assert not (doc_dir / "figures" / "page1_img1.png").exists()
+        # Returns a resolving relative link for the page that produced it.
+        assert links[1] == ["![Figure 1 (page 1)](./figures/figure_1_page1.png)"]
+
+    def test_figure_numbering_is_global_with_source_page(self, tmp_path):
+        """Figures are numbered globally across the doc, tagged by source page."""
+        proc = _proc(include_images=True)
+        doc_dir = tmp_path / "doc"
+        doc_dir.mkdir()
+        result = OCRResult(
+            file_path=tmp_path / "doc.png",
+            pages=["a", "b"],
+            page_images={1: [_PNG_1x1], 2: [_PNG_1x1, _PNG_1x1]},
+        )
+        (tmp_path / "doc.png").write_bytes(_PNG_1x1)
+
+        proc._save_figures(result, doc_dir)
+        figs = sorted(p.name for p in (doc_dir / "figures").iterdir())
+        assert figs == [
+            "figure_1_page1.png",
+            "figure_2_page2.png",
+            "figure_3_page2.png",
+        ]
 
     def test_no_figures_when_images_disabled(self, tmp_path):
-        proc = _make_processor(include_images=False)
-        out = tmp_path / "out"
-        out.mkdir()
-        b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50).decode()
-        img = SimpleNamespace(image_base64=b64, id="fig1.png")
-        page = SimpleNamespace(index=0, markdown="text", images=[img])
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        assert not (out / "doc" / "figures").exists()
-        md = (out / "doc" / "doc.md").read_text()
-        assert "![Image" not in md
+        proc = _proc(include_images=False)
+        doc_dir = tmp_path / "doc"
+        doc_dir.mkdir()
+        result = _result_with_image(tmp_path, page_no=1)
 
-    def test_image_default_extension(self, tmp_path):
-        proc = _make_processor(include_images=True)
-        out = tmp_path / "out"
-        out.mkdir()
-        b64 = base64.b64encode(b"\x89PNG" + b"\x00" * 50).decode()
-        img = SimpleNamespace(image_base64=b64, id="no_ext")  # no extension in id
-        page = SimpleNamespace(index=0, markdown="text", images=[img])
-        res = _result(tmp_path, SimpleNamespace(pages=[page]))
-        proc.save_results(res, out)
-        assert (out / "doc" / "figures" / "page1_img1.png").exists()
+        links = proc._save_figures(result, doc_dir)
+        assert links == {}
+        assert not (doc_dir / "figures").exists()
+
+
+# ---------------------------------------------------------------------------
+# Truncation note (folded into the body by save_results, recorded in metadata)
+# ---------------------------------------------------------------------------
+
+
+class TestTruncationNote:
+    def test_note_prepended_to_body(self, tmp_path):
+        proc = _proc(include_images=False, verbose=False)
+        fp = tmp_path / "doc.png"
+        fp.write_bytes(_PNG_1x1)
+        result = OCRResult(
+            file_path=fp,
+            pages=["page one"],
+            note="Processed 50 of 200 pages (--max-pages)",
+        )
+        md_path = proc.save_results(result, tmp_path / "out", "doc.png")
+        body = md_path.read_text()
+        assert "> **Note:** Processed 50 of 200 pages" in body
+        assert "## Page 1" in body  # contract still owns page headers

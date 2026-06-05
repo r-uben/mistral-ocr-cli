@@ -46,8 +46,8 @@ export MISTRAL_API_KEY="your_key_here"
 # Process a single file
 mistral-ocr document.pdf
 
-# Process a directory
-mistral-ocr ./documents --output-path ./results
+# Process a directory (default output root is ./documents/ocr/)
+mistral-ocr ./documents -o ./results
 
 # Preview what would be processed (no API calls)
 mistral-ocr ./documents --dry-run
@@ -65,49 +65,59 @@ Arguments:
   INPUT_PATH                        Path to input file or directory (required)
 
 Options:
-  -o, --output-path PATH            Output directory (default: <input_dir>/mistral_ocr_output/)
+  -o, --output-dir PATH             Output root (default: <input-parent>/ocr/). Never required.
   --api-key TEXT                    Mistral API key (or set MISTRAL_API_KEY env var)
   --model TEXT                      OCR model (default: mistral-ocr-latest)
   --env-file PATH                   Path to .env file
 
-  --include-images/--no-images      Extract embedded images (default: True)
-  --save-originals/--no-save-originals  Copy original files to output (default: True)
-  --metadata/--no-metadata          Include markdown header block (default: True)
-  --page-headings/--no-page-headings  Include "## Page N" headings (default: True)
+  --include-images/--no-images      Extract embedded figures (default: True)
 
-  --table-format [markdown|html]    Extract tables separately (OCR 3+)
+  --table-format [markdown|html]    Request tables inline in a given format (OCR 3+)
   --extract-headers/--no-extract-headers  Extract page headers (OCR 3+)
   --extract-footers/--no-extract-footers  Extract page footers (OCR 3+)
 
+  --max-pages N                     Max PDF pages to process (default: all pages)
   -w, --workers N                   Concurrent workers for batch processing (default: 1)
-  --reprocess                       Reprocess already-processed files
-  --add-timestamp/--no-timestamp    Timestamp output folder name (default: False)
+  --reprocess                       Re-OCR files already recorded completed (checksum-based)
   --dry-run                         List files without calling the API
-  -q, --quiet                       Suppress all output except errors
+  -q, --quiet                       Suppress output except the written .md paths (for scripting)
   -v, --verbose                     Enable verbose/debug output
   --log-file PATH                   Write logs to file
   --version                         Show version
   --help                            Show this message
 ```
 
+> Output writing is owned by the shared
+> [`ocr-output-contract`](https://github.com/r-uben/ocr-output-contract) package, so
+> mistral's output structure is byte-identical to every sibling OCR engine CLI. The
+> markdown body is always clean (`## Page N` headers, no header block, no YAML
+> frontmatter); all provenance lives in the JSON sidecars. The `--save-originals`,
+> `--metadata`, `--page-headings` and `--add-timestamp` flags are deprecated no-ops kept
+> only for invocation compatibility.
+
 ## Output structure
 
+Default output root is `<input-parent>/ocr/` (`-o` overrides verbatim; never required).
+Each source document gets one aggregated folder, mirroring the input subtree so
+same-basename inputs in different directories never collide:
+
 ```
-mistral_ocr_output/
+ocr/
 ├── document_name/
-│   ├── document_name.pdf       # original copy (if --save-originals)
-│   ├── document_name.md        # OCR markdown
-│   ├── figures/                # extracted images
-│   │   ├── page1_img1.png
-│   │   └── page2_img1.png
-│   └── tables/                 # extracted tables (if --table-format)
-│       └── page1_table1.md
-├── another_document/
+│   ├── document_name.md        # all pages, joined under "## Page N" headers (clean body)
+│   ├── figures/                # extracted embedded images (normalised to PNG)
+│   │   ├── figure_1_page1.png
+│   │   └── figure_2_page2.png
+│   └── metadata.json           # per-document sidecar: status/checksum/model/backend/...
+├── sub/dir/another_document/
 │   └── ...
-└── metadata.json               # processing stats, file list, errors
+└── metadata.json               # root index, keyed by input-relative path
 ```
 
-Use `--no-metadata` and `--no-page-headings` for cleaner markdown output without the header block and page separators.
+Resume is content-aware: a file recorded `completed` is skipped only when its SHA-256
+checksum still matches, so editing a file in place forces a re-OCR. Failures are recorded
+with `status="failed"`, and any file/page failure drives a nonzero exit (uniform across
+single-file and batch runs).
 
 ## Configuration
 
@@ -118,12 +128,10 @@ All CLI options can also be set via environment variables or a `.env` file:
 | `--api-key` | `MISTRAL_API_KEY` | (required) |
 | `--model` | `MISTRAL_MODEL` | `mistral-ocr-latest` |
 | `--include-images` | `INCLUDE_IMAGES` | `true` |
-| `--save-originals` | `SAVE_ORIGINAL_IMAGES` | `true` |
-| `--metadata` | `INCLUDE_METADATA` | `true` |
-| `--page-headings` | `INCLUDE_PAGE_HEADINGS` | `true` |
 | `--table-format` | `TABLE_FORMAT` | (none) |
 | `--extract-headers` | `EXTRACT_HEADER` | `false` |
 | `--extract-footers` | `EXTRACT_FOOTER` | `false` |
+| `--max-pages` | `MAX_PAGES` | (all pages) |
 | `--workers` | `MAX_WORKERS` | `1` |
 | `--verbose` | `VERBOSE` | `false` |
 | | `MAX_FILE_SIZE_MB` | `50` |
