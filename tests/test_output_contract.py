@@ -26,7 +26,12 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-from ocr_output_contract import METADATA_FILENAME, doc_dir_for, markdown_path_for
+from ocr_output_contract import (
+    METADATA_FILENAME,
+    UNREADABLE_CHECKSUM,
+    doc_dir_for,
+    markdown_path_for,
+)
 from ocr_output_contract.conformance import ExpectedDoc, assert_conforms
 
 from mistral_ocr.config import Config
@@ -288,6 +293,10 @@ def test_unreadable_input_recorded_failed_batch_continues(tmp_path: Path) -> Non
     bad.write_bytes(_PNG_1x1)
     # Make the input unreadable so safe_checksum cannot hash it.
     os.chmod(bad, 0)
+    # chmod(0) does not deny reads when running as root (e.g. some CI); capture
+    # the effective readability so the sentinel assertion only fires when the
+    # input is genuinely unreadable.
+    bad_was_unreadable = not os.access(bad, os.R_OK)
 
     try:
         proc = FakeMistralProcessor.make(
@@ -305,6 +314,14 @@ def test_unreadable_input_recorded_failed_batch_continues(tmp_path: Path) -> Non
         root_index = json.loads((tmp_path / "out" / "metadata.json").read_text())
         assert root_index["files"]["bad.png"]["status"] == "failed"
         assert root_index["files"]["good.png"]["status"] == "completed"
+        # v0.1.3: the failure record must carry a VALID ``sha256:`` checksum
+        # (failure_checksum), never the old bare ``"sha256:"`` (no digest). When
+        # the input is genuinely unreadable it is the UNREADABLE_CHECKSUM sentinel.
+        bad_checksum = root_index["files"]["bad.png"]["checksum"]
+        assert bad_checksum.startswith("sha256:")
+        assert bad_checksum != "sha256:"
+        if bad_was_unreadable:
+            assert bad_checksum == UNREADABLE_CHECKSUM
     finally:
         os.chmod(bad, stat.S_IRUSR | stat.S_IWUSR)
 

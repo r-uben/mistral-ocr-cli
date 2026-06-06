@@ -55,6 +55,7 @@ from ocr_output_contract import (
     Status,
     assemble_pages,
     doc_dir_for,
+    failure_checksum,
     figure_filename,
     figure_markdown_link,
     figures_dir_for,
@@ -780,10 +781,12 @@ class OCRProcessor:
             output_rel = str(markdown_path.relative_to(output_root))
         except ValueError:
             output_rel = str(markdown_path)
-        try:
-            checksum = sha256_checksum(result.file_path)
-        except OSError:
-            checksum = "sha256:"
+        # failure_checksum: the real digest if the input is still readable, else
+        # the canonical ``sha256:`` UNREADABLE_CHECKSUM sentinel (v0.1.3). The
+        # schema requires a ``sha256:`` checksum even on a failure record, and the
+        # sentinel can never equal a real digest (unlike the old bare ``"sha256:"``,
+        # which had no digest and could spuriously match other failure records).
+        checksum = failure_checksum(result.file_path)
         return DocMetadata(
             status=Status.FAILED,
             checksum=checksum,
@@ -831,7 +834,13 @@ class OCRProcessor:
         """
         meta = DocMetadata(
             status=Status.FAILED,
-            checksum="sha256:",
+            # failure_checksum yields a valid ``sha256:`` value -- the real digest
+            # if the file is now readable, else the canonical UNREADABLE_CHECKSUM
+            # sentinel -- never the old bare ``"sha256:"`` (no digest). The schema
+            # requires a ``sha256:`` checksum even on a failure record, and the
+            # sentinel can never equal a real digest, so a later readable run
+            # reprocesses instead of treating it as already done.
+            checksum=failure_checksum(file_path),
             model=self.config.model,
             backend=BACKEND,
             processing_time=0.0,
