@@ -91,6 +91,65 @@ class TestPageBodyIsCleanBody:
         assert body.strip() == "hello"
 
 
+def _table(tid="tbl-0", content="| A | B |\n|---|---|\n| 1 | 2 |", fmt="markdown"):
+    return SimpleNamespace(id=tid, content=content, format_=fmt)
+
+
+class TestStructuredTables:
+    """Regression guard: page.tables must NOT be silently discarded.
+
+    With --table-format=markdown|html Mistral returns tables in the structured
+    page.tables field (NOT inline in page.markdown), so a renderer that ignores
+    page.tables makes --table-format a silent no-op and drops OCR-3 table
+    extraction. These assert the structured tables land in the rendered body.
+    """
+
+    def test_table_appended_when_no_placeholder(self):
+        page = _page(markdown="Body text", tables=[_table()])
+        body = _proc(table_format="markdown")._render_page_markdown(page)
+        assert "Body text" in body
+        # The table content survived (not dropped).
+        assert "| A | B |" in body and "| 1 | 2 |" in body
+
+    def test_table_replaces_inline_placeholder(self):
+        """A markdown placeholder referencing the table id is replaced in place."""
+        page = _page(
+            markdown="See table below:\n\n[tbl-0](tbl-0)\n\nrest",
+            tables=[_table(tid="tbl-0", content="| X |\n|---|\n| 9 |")],
+        )
+        body = _proc(table_format="markdown")._render_page_markdown(page)
+        assert "[tbl-0](tbl-0)" not in body  # placeholder consumed
+        assert "| X |" in body and "| 9 |" in body
+        assert "rest" in body
+
+    def test_html_table_passed_through(self):
+        page = _page(
+            markdown="Body",
+            tables=[_table(content="<table><tr><td>v</td></tr></table>", fmt="html")],
+        )
+        body = _proc(table_format="html")._render_page_markdown(page)
+        assert "<table><tr><td>v</td></tr></table>" in body
+
+    def test_multiple_tables_all_preserved(self):
+        page = _page(
+            markdown="Body",
+            tables=[_table(tid="t1", content="TABLE-ONE"), _table(tid="t2", content="TABLE-TWO")],
+        )
+        body = _proc(table_format="markdown")._render_page_markdown(page)
+        assert "TABLE-ONE" in body and "TABLE-TWO" in body
+
+    def test_no_tables_is_noop(self):
+        """When --table-format is unset the API inlines tables; render is a no-op."""
+        page = _page(markdown="inline | table | here")
+        body = _proc()._render_page_markdown(page)
+        assert body.strip() == "inline | table | here"
+
+    def test_empty_tables_list_is_noop(self):
+        page = _page(markdown="just text", tables=[])
+        body = _proc(table_format="markdown")._render_page_markdown(page)
+        assert body.strip() == "just text"
+
+
 # ---------------------------------------------------------------------------
 # Figure extraction (_save_figures): canonical figure_<N>_page<P>.png naming
 # ---------------------------------------------------------------------------

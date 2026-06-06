@@ -26,6 +26,7 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
+from ocr_output_contract import METADATA_FILENAME, doc_dir_for, markdown_path_for
 from ocr_output_contract.conformance import ExpectedDoc, assert_conforms
 
 from mistral_ocr.config import Config
@@ -99,7 +100,8 @@ def test_multipage_conforms_no_whole_doc_dump(tmp_path: Path) -> None:
         require_failures_nonzero_exit=outcome.exit_code != 0,
     )
 
-    body = (tmp_path / "out" / "sample" / "sample.md").read_text()
+    doc_dir = doc_dir_for(tmp_path / "out", "sample.png")
+    body = markdown_path_for(doc_dir, "sample.png").read_text()
     assert "## Page 1" in body and "## Page 2" in body
     # Both pages survived — not just the first (no whole-doc dump / data loss).
     assert "PAGE-1-CONTENT" in body and "PAGE-2-CONTENT" in body
@@ -122,7 +124,8 @@ def test_failure_recorded_and_nonzero_exit(tmp_path: Path) -> None:
         [ExpectedDoc(rel_key="broken.png", status="failed")],
         require_failures_nonzero_exit=True,
     )
-    doc_meta = json.loads((tmp_path / "out" / "broken" / "metadata.json").read_text())
+    doc_dir = doc_dir_for(tmp_path / "out", "broken.png")
+    doc_meta = json.loads((doc_dir / METADATA_FILENAME).read_text())
     assert doc_meta["status"] == "failed"
     assert "error" in doc_meta
 
@@ -182,5 +185,105 @@ def test_embedded_figures_conform(tmp_path: Path) -> None:
         tmp_path / "out",
         [ExpectedDoc(rel_key="withfig.png", pages=1, status="completed", figures=[(1, 1)])],
     )
-    body = (tmp_path / "out" / "withfig" / "withfig.md").read_text()
+    doc_dir = doc_dir_for(tmp_path / "out", "withfig.png")
+    body = markdown_path_for(doc_dir, "withfig.png").read_text()
     assert "figures/figure_1_page1.png" in body
+
+
+def test_checksum_resume_skip_emits_output_path(tmp_path: Path) -> None:
+    """A checksum-resumed (skipped-but-valid) doc still reports its .md path.
+
+    The quiet scripting contract is one .md path per line on stdout, *including*
+    docs skipped on resume. The skip branch previously called add(COMPLETED)
+    without an output_path, so a rerun emitted nothing. This asserts the path is
+    reported AND that the API is not called again on the second run.
+    """
+    img = tmp_path / "resume.png"
+    img.write_bytes(_PNG_1x1)
+
+    calls = {"n": 0}
+
+    def responder(_kwargs):
+        calls["n"] += 1
+        return SimpleNamespace(pages=[_page(0, "content")])
+
+    out = tmp_path / "out"
+    proc1 = FakeMistralProcessor.make(responder, include_images=False)
+    first = proc1.process(img, output_path=out)
+    assert first.exit_code == 0
+    assert calls["n"] == 1
+    expected_md = str(markdown_path_for(doc_dir_for(out, "resume.png"), "resume.png"))
+    assert first.outputs == [expected_md]
+
+    # Second run: a fresh processor (fresh RootIndex load from disk) resumes.
+    proc2 = FakeMistralProcessor.make(responder, include_images=False)
+    second = proc2.process(img, output_path=out)
+    assert second.exit_code == 0
+    # The API was NOT called again (checksum + fingerprint + on-disk skip).
+    assert calls["n"] == 1
+    # ...yet the skipped-but-valid doc STILL reports its .md path for scripting.
+    assert second.outputs == [expected_md]
+
+
+def test_changed_fingerprint_reprocesses(tmp_path: Path) -> None:
+    """A re-run under a different run config (table_format) reprocesses, not skips."""
+    img = tmp_path / "fp.png"
+    img.write_bytes(_PNG_1x1)
+
+    calls = {"n": 0}
+
+    def responder(_kwargs):
+        calls["n"] += 1
+        return SimpleNamespace(pages=[_page(0, "content")])
+
+    out = tmp_path / "out"
+    FakeMistralProcessor.make(responder, include_images=False).process(img, output_path=out)
+    assert calls["n"] == 1
+
+    # Same input + checksum, but a different OCR-3 config → different fingerprint.
+    proc2 = FakeMistralProcessor.make(responder, include_images=False, table_format="markdown")
+    proc2.process(img, output_path=out)
+    assert calls["n"] == 2  # reprocessed, not silently reused
+
+
+def test_persistence_failure_does_not_abort_batch(tmp_path: Path) -> None:
+    """A save/metadata I/O failure on one doc is recorded failed; batch continues.
+
+    Persistence failures previously escaped to the CLI and aborted the whole
+    batch with no status=failed record. They must instead be folded into a
+    failed RunOutcome entry while the remaining files still process.
+    """
+    root = tmp_path / "in"
+    root.mkdir()
+    for name in ("a.png", "boom.png", "c.png"):
+        (root / name).write_bytes(_PNG_1x1)
+
+    proc = FakeMistralProcessor.make(
+        lambda _k: SimpleNamespace(pages=[_page(0, "content")]), include_images=False
+    )
+
+    # Make save_results raise for exactly one document; the others persist fine.
+    real_save = proc.save_results
+
+    def flaky_save(result, output_root, rel_key):
+        if Path(rel_key).name == "boom.png":
+            raise OSError("disk full")
+        return real_save(result, output_root, rel_key)
+
+    proc.save_results = flaky_save
+
+    outcome = proc.process(root, output_path=tmp_path / "out")
+
+    # Batch did NOT abort: the two good files completed, the bad one is failed.
+    assert outcome.completed == 2
+    assert outcome.failed == 1
+    assert outcome.exit_code != 0
+    assert "boom.png" in outcome.failures
+
+    # The failure is durably recorded (status=failed) in the root index, and the
+    # failed placeholder path is NOT echoed to the quiet stdout list.
+    root_index = json.loads((tmp_path / "out" / "metadata.json").read_text())
+    assert root_index["files"]["boom.png"]["status"] == "failed"
+    failed_md = str(markdown_path_for(doc_dir_for(tmp_path / "out", "boom.png"), "boom.png"))
+    assert failed_md not in outcome.outputs
+    assert len(outcome.outputs) == 2

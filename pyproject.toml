@@ -24,7 +24,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "ocr-output-contract @ git+https://github.com/r-uben/ocr-output-contract@v0.1.0",
+    "ocr-output-contract @ git+https://github.com/r-uben/ocr-output-contract@v0.1.1",
     "mistralai>=1.0.0,<2.0.0",
     "python-dotenv>=1.0.0",
     "click>=8.1.7",

@@ -59,6 +59,7 @@ from ocr_output_contract import (
     markdown_path_for,
     relative_key,
     resolve_output_root,
+    run_fingerprint,
     sha256_checksum,
     utc_timestamp,
     write_doc_metadata,
@@ -82,6 +83,12 @@ logger = logging.getLogger(__name__)
 
 # Shared console instance — CLI sets .quiet on this directly
 console = Console()
+
+# Dedicated stderr console for per-file failures. It is NEVER muted by --quiet
+# (the CLI only sets console.quiet), so SYS-02's "failures still emitted to
+# stderr under --quiet" holds while stdout stays a clean one-path-per-line list
+# of successful outputs for scripting.
+err_console = Console(stderr=True)
 
 #: Backend identifier recorded in metadata. Mistral is a cloud OCR API.
 BACKEND = "mistral-api"
@@ -324,9 +331,16 @@ class OCRProcessor:
 
         The contract supplies the ``## Page N`` header at assembly time, so this
         produces only the page *body*: optional page dimensions, header/footer
-        quotes, the OCR text (tables arrive inline in ``page.markdown`` when
-        ``--table-format`` is set), and hyperlinks. Embedded image links are
-        appended later (after figures are saved with canonical names).
+        quotes, the OCR text, the structured tables, and hyperlinks. Embedded
+        image links are appended later (after figures are saved with canonical
+        names).
+
+        Tables: when ``--table-format=markdown|html`` is set, Mistral OCR returns
+        tables in the structured ``page.tables`` field, NOT inline in
+        ``page.markdown`` (the markdown may carry a placeholder referencing the
+        table ``id``). Each structured table is rendered into the body so the
+        ``--table-format`` flag is not a silent no-op: a placeholder is replaced
+        in place when present, otherwise the table is appended.
         """
         parts: list[str] = []
 
@@ -341,9 +355,12 @@ class OCRProcessor:
         if header:
             parts.append(f"> **Header:** {header}")
 
-        markdown = getattr(page, "markdown", None)
+        markdown = getattr(page, "markdown", None) or ""
+        markdown, appended_tables = self._render_tables(markdown, getattr(page, "tables", None))
         if markdown:
             parts.append(markdown)
+        if appended_tables:
+            parts.append(appended_tables)
 
         hyperlinks = getattr(page, "hyperlinks", None)
         if hyperlinks:
@@ -361,6 +378,64 @@ class OCRProcessor:
             parts.append(f"> **Footer:** {footer}")
 
         return "\n\n".join(parts).strip()
+
+    @staticmethod
+    def _render_one_table(table: Any) -> str:
+        """Render one structured OCR-3 table object into markdown body text.
+
+        ``content`` already carries the table in the requested ``--table-format``
+        (a markdown table or an HTML ``<table>``); HTML is passed through verbatim
+        (markdown renderers accept inline HTML), markdown likewise. Empty content
+        renders to an empty string.
+        """
+        content: str = str(getattr(table, "content", "") or "")
+        return content.strip()
+
+    @classmethod
+    def _render_tables(cls, markdown: str, tables: Any) -> tuple[str, str]:
+        """Fold structured ``page.tables`` into the page body.
+
+        Returns ``(markdown, appended)`` where ``markdown`` has any in-body table
+        placeholder (a markdown link/text referencing the table ``id``) replaced
+        by the rendered table, and ``appended`` is the concatenation of tables
+        that had no placeholder to anchor them (so a populated ``tables`` field is
+        never silently discarded). When ``--table-format`` is NOT set the API
+        inlines tables in ``page.markdown`` and ``tables`` is empty, so this is a
+        no-op and the existing inline content is preserved.
+        """
+        if not tables:
+            return markdown, ""
+
+        appended: list[str] = []
+        for table in tables:
+            rendered = cls._render_one_table(table)
+            if not rendered:
+                continue
+            table_id = getattr(table, "id", None)
+            placeholder = cls._table_placeholder(markdown, table_id)
+            if placeholder is not None:
+                markdown = markdown.replace(placeholder, rendered)
+            else:
+                appended.append(rendered)
+        return markdown, "\n\n".join(appended)
+
+    @staticmethod
+    def _table_placeholder(markdown: str, table_id: Any) -> str | None:
+        """Return the exact placeholder substring in ``markdown`` for a table id.
+
+        Mistral may embed a table placeholder such as ``[tbl-0.html](tbl-0.html)``
+        or a bare ``tbl-0.html`` token referencing the table ``id``. Returns the
+        matched substring to replace, or ``None`` if no placeholder is present.
+        """
+        if not table_id or not markdown:
+            return None
+        tid = str(table_id)
+        linked = f"[{tid}]({tid})"
+        if linked in markdown:
+            return linked
+        if tid in markdown:
+            return tid
+        return None
 
     @staticmethod
     def _page_image_bytes(page: Any) -> list[bytes]:
@@ -492,6 +567,25 @@ class OCRProcessor:
                     figure_counter -= 1
         return links
 
+    def _run_fingerprint(self) -> str:
+        """Fingerprint of the run config that affects *what output is produced*.
+
+        Beyond model + backend, mistral's OCR-3 toggles (table format, header /
+        footer extraction, embedded-image extraction) change the produced
+        markdown, so they are folded into the contract's ``task`` selector. A
+        re-run under a different ``--table-format`` / ``--extract-headers`` /
+        ``--model`` therefore reprocesses instead of silently reusing a cached
+        result keyed only on the input checksum.
+        """
+        task = (
+            f"table={self.config.table_format or ''}"
+            f";header={int(self.config.extract_header)}"
+            f";footer={int(self.config.extract_footer)}"
+            f";images={int(self.config.include_images)}"
+        )
+        fingerprint: str = run_fingerprint(model=self.config.model, backend=BACKEND, task=task)
+        return fingerprint
+
     def _build_doc_metadata(
         self, result: OCRResult, markdown_path: Path, output_root: Path
     ) -> DocMetadata:
@@ -508,6 +602,7 @@ class OCRProcessor:
             output_path=str(markdown_path.relative_to(output_root)),
             pages=result.page_count,
             error=error,
+            fingerprint=self._run_fingerprint(),
         )
 
     def _persist(
@@ -516,15 +611,78 @@ class OCRProcessor:
         """Write markdown, figures, and BOTH metadata levels for one document.
 
         Always writes output (markdown + per-doc + root metadata) regardless of
-        success, so failures are recorded with ``status=failed`` per the canon.
+        OCR success, so failures are recorded with ``status=failed`` per the canon.
+
+        Persistence is also failure-isolated: if a save / metadata-write / index
+        record raises (e.g. a disk-full / permission / OSError), the exception is
+        NOT allowed to escape and abort the whole batch. Instead it is folded into
+        a ``status=failed`` record (best-effort persisted, both metadata levels),
+        and a failed :class:`DocMetadata` is returned so the caller marks this one
+        document failed and the batch continues — uniform per-file failure
+        accounting that covers I/O failures during persistence, not just OCR.
         """
-        markdown_path = self.save_results(result, output_root, rel_key)
-        meta = self._build_doc_metadata(result, markdown_path, output_root)
-        doc_dir = doc_dir_for(output_root, rel_key)
-        write_doc_metadata(doc_dir, rel_key, meta)
-        with self._lock:
-            index.record(rel_key, meta)
-        return meta, markdown_path
+        markdown_path = markdown_path_for(doc_dir_for(output_root, rel_key), rel_key)
+        try:
+            markdown_path = self.save_results(result, output_root, rel_key)
+            meta = self._build_doc_metadata(result, markdown_path, output_root)
+            doc_dir = doc_dir_for(output_root, rel_key)
+            write_doc_metadata(doc_dir, rel_key, meta)
+            with self._lock:
+                index.record(rel_key, meta)
+            return meta, markdown_path
+        except Exception as exc:
+            logger.error("Failed to persist output for %s: %s", rel_key, exc)
+            logger.debug("Persistence traceback for %s", rel_key, exc_info=True)
+            failed_meta = self._build_failed_persist_metadata(
+                result, markdown_path, output_root, exc
+            )
+            self._best_effort_record_failure(output_root, rel_key, index, failed_meta)
+            return failed_meta, markdown_path
+
+    def _build_failed_persist_metadata(
+        self, result: OCRResult, markdown_path: Path, output_root: Path, exc: Exception
+    ) -> DocMetadata:
+        """Build a ``status=failed`` record for a persistence I/O failure."""
+        try:
+            output_rel = str(markdown_path.relative_to(output_root))
+        except ValueError:
+            output_rel = str(markdown_path)
+        try:
+            checksum = sha256_checksum(result.file_path)
+        except OSError:
+            checksum = "sha256:"
+        return DocMetadata(
+            status=Status.FAILED,
+            checksum=checksum,
+            model=self.config.model,
+            backend=BACKEND,
+            processing_time=result.processing_time,
+            timestamp=utc_timestamp(),
+            output_path=output_rel,
+            pages=result.page_count,
+            error=f"persistence failed: {exc}",
+            fingerprint=self._run_fingerprint(),
+        )
+
+    def _best_effort_record_failure(
+        self, output_root: Path, rel_key: str, index: RootIndex, meta: DocMetadata
+    ) -> None:
+        """Try to persist a failed record without ever re-raising.
+
+        The original persistence already failed, so these writes may also fail;
+        each is isolated so the batch still continues and the in-memory
+        :class:`RunOutcome` (driven by the returned meta) remains authoritative
+        even when nothing reaches disk.
+        """
+        try:
+            write_doc_metadata(doc_dir_for(output_root, rel_key), rel_key, meta)
+        except Exception:
+            logger.debug("Best-effort per-doc failure write also failed for %s", rel_key)
+        try:
+            with self._lock:
+                index.record(rel_key, meta)
+        except Exception:
+            logger.debug("Best-effort root-index failure write also failed for %s", rel_key)
 
     # ------------------------------------------------------------------
     # Orchestration
@@ -560,12 +718,18 @@ class OCRProcessor:
         index = RootIndex(output_root)
 
         # Fix (audit HIGH): content-aware skip — status==completed AND checksum
-        # match — so an in-place edit forces reprocessing instead of serving
-        # stale output (the old resolved-path-equality skip did not).
-        if not reprocess and index.is_completed(rel_key, sha256_checksum(file_path)):
+        # match AND output still on disk AND a matching run fingerprint (model /
+        # OCR-3 toggles) — so an in-place edit, a deleted output, or a config
+        # change all force reprocessing instead of serving stale output.
+        if not reprocess and index.is_completed(
+            rel_key, sha256_checksum(file_path), fingerprint=self._run_fingerprint()
+        ):
             console.print(f"[yellow]Already processed:[/yellow] {file_path.name}")
             console.print("[dim]Use --reprocess to force reprocessing[/dim]")
-            outcome.add(Status.COMPLETED)
+            # Emit the existing .md path so the quiet scripting contract still
+            # reports a path for skipped-but-valid docs (one .md path per line).
+            doc_dir = doc_dir_for(output_root, rel_key)
+            outcome.add(Status.COMPLETED, output_path=str(markdown_path_for(doc_dir, rel_key)))
             return outcome
 
         console.print(f"[blue]Processing:[/blue] {file_path}")
@@ -577,17 +741,17 @@ class OCRProcessor:
             result = self.process_file(file_path)
 
         meta, markdown_path = self._persist(result, output_root, rel_key, index)
-        outcome.add(
-            meta.status,
-            detail=None if meta.status is Status.COMPLETED else rel_key,
-            output_path=str(markdown_path),
-        )
-
+        # Only successful outputs land in outcome.outputs (the quiet stdout
+        # scripting list). A failed doc's placeholder .md path is NOT echoed to
+        # stdout as if it succeeded; the failure goes to stderr instead.
         if meta.status is Status.COMPLETED:
+            outcome.add(Status.COMPLETED, output_path=str(markdown_path))
             console.print("\n[green]Success[/green]")
             console.print(f"[dim]Time: {result.processing_time:.2f}s[/dim]")
         else:
+            outcome.add(meta.status, detail=rel_key)
             console.print(f"\n[red]Failed:[/red] {meta.error}")
+            err_console.print(f"FAILED {rel_key}: {meta.error}")
         return outcome
 
     def _process_directory(
@@ -597,8 +761,10 @@ class OCRProcessor:
         outcome = RunOutcome()
         output_root = resolve_output_root(dir_path, output_path)
 
-        # Exclude anything under the output root from discovery.
-        files = get_supported_files(dir_path, exclude_paths=[output_root.resolve()])
+        # Discovery (contract iter_input_files) excludes the resolved output root
+        # so prior outputs are never re-ingested; it does NOT skip arbitrary dirs
+        # merely named 'ocr'.
+        files = get_supported_files(dir_path, output_root)
         if not files:
             console.print("[yellow]No supported files found in the directory.[/yellow]")
             return outcome
@@ -609,10 +775,15 @@ class OCRProcessor:
         files_to_process: list[tuple[Path, str]] = []
         for f in files:
             rel_key = relative_key(f, dir_path)
-            if not reprocess and index.is_completed(rel_key, sha256_checksum(f)):
+            if not reprocess and index.is_completed(
+                rel_key, sha256_checksum(f), fingerprint=self._run_fingerprint()
+            ):
                 if self.config.verbose:
                     console.print(f"[dim]Skipping: {rel_key}[/dim]")
-                outcome.add(Status.COMPLETED)
+                # Emit the existing .md path so quiet scripting still reports a
+                # path for skipped-but-valid docs.
+                doc_dir = doc_dir_for(output_root, rel_key)
+                outcome.add(Status.COMPLETED, output_path=str(markdown_path_for(doc_dir, rel_key)))
             else:
                 files_to_process.append((f, rel_key))
 
@@ -672,17 +843,20 @@ class OCRProcessor:
         index: RootIndex,
         outcome: RunOutcome,
     ) -> None:
-        """Persist one result and fold its status into the run outcome."""
+        """Persist one result and fold its status into the run outcome.
+
+        Only successful docs contribute their .md path to ``outcome.outputs`` (the
+        quiet stdout scripting list); failures are routed to stderr instead, so a
+        scripting consumer never mistakes a failed placeholder for a success.
+        """
         meta, markdown_path = self._persist(result, output_root, rel_key, index)
-        outcome.add(
-            meta.status,
-            detail=None if meta.status is Status.COMPLETED else rel_key,
-            output_path=str(markdown_path),
-        )
         if meta.status is Status.COMPLETED:
+            outcome.add(Status.COMPLETED, output_path=str(markdown_path))
             console.print(f"  [green]OK[/green] {rel_key} ({result.processing_time:.1f}s)")
         else:
+            outcome.add(meta.status, detail=rel_key)
             console.print(f"  [red]FAILED[/red] {rel_key}: {meta.error}")
+            err_console.print(f"FAILED {rel_key}: {meta.error}")
 
     def _progress(self, total: int | None = None) -> Progress | _NullProgress:
         """A rich Progress, or a no-op context when quiet."""

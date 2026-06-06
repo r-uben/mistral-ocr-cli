@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
-from ocr_output_contract import RunOutcome
+from ocr_output_contract import RunOutcome, doc_dir_for, markdown_path_for
 
 from mistral_ocr.cli import main
 from mistral_ocr.config import Config
@@ -220,7 +220,7 @@ class TestProcessOrchestration:
         assert outcome.exit_code == 0
         # Output goes to the canonical default root <input-parent>/ocr/.
         out_dir = tmp_path / "ocr"
-        assert (out_dir / "doc" / "doc.md").exists()
+        assert markdown_path_for(doc_dir_for(out_dir, "doc.png"), "doc.png").exists()
         assert (out_dir / "metadata.json").exists()
 
     def test_single_file_skip_already_processed(self, tmp_path):
@@ -305,6 +305,8 @@ class TestProcessOrchestration:
         outcome = proc.process(input_dir)
         assert outcome.completed == 2
         assert outcome.exit_code == 0
-        # Directory default root is <input>/ocr/.
-        assert (input_dir / "ocr" / "a" / "a.md").exists()
-        assert (input_dir / "ocr" / "b" / "b.md").exists()
+        # Directory default root is <input>/ocr/. PNG inputs disambiguate the
+        # doc folder as <stem>_png per the v0.1.1 same-stem/different-ext fix.
+        out_root = input_dir / "ocr"
+        assert markdown_path_for(doc_dir_for(out_root, "a.png"), "a.png").exists()
+        assert markdown_path_for(doc_dir_for(out_root, "b.png"), "b.png").exists()

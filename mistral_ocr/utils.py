@@ -15,9 +15,9 @@ import base64
 import mimetypes
 from pathlib import Path
 
-from ocr_output_contract import DEFAULT_OUTPUT_DIRNAME
+from ocr_output_contract import iter_input_files
 
-# Canonical extension sets — used by processor.py and get_supported_files()
+# Canonical extension sets — used by processor.py and discovery.
 DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".pptx"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff", ".avif"}
 SUPPORTED_EXTENSIONS = DOCUMENT_EXTENSIONS | IMAGE_EXTENSIONS
@@ -66,38 +66,18 @@ def decode_base64_image(base64_string: str) -> bytes:
     return base64.b64decode(base64_string)
 
 
-def get_supported_files(
-    directory: Path,
-    exclude_dirs: list[str] | None = None,
-    exclude_paths: list[Path] | None = None,
-) -> list[Path]:
-    """Get all supported files from a directory, excluding output directories.
+def get_supported_files(directory: Path, output_root: Path) -> list[Path]:
+    """Get all supported input files under ``directory``, excluding outputs.
 
-    Args:
-        directory: Root directory to search.
-        exclude_dirs: Directory *names* to skip (matched against each path
-            component). Defaults to the canonical output dir name (``ocr``).
-        exclude_paths: Resolved absolute paths to skip (any file underneath is
-            excluded). Pass the resolved output root so prior outputs are never
-            re-ingested on a rerun.
+    Discovery is delegated to the contract's :func:`iter_input_files`, which
+    recurses ``directory`` and prunes everything at or under the RESOLVED
+    ``output_root`` (so the engine never re-ingests its own ``.md``/figure
+    outputs on a rerun). It targets the *real* output directory by resolved path,
+    not any path component that merely happens to be named ``ocr`` — fixing the
+    "files under any directory named 'ocr' silently skipped" bug that was acutely
+    fatal under this user's own ``.../toolkits/ocr/...`` tree.
     """
-    if exclude_dirs is None:
-        exclude_dirs = [DEFAULT_OUTPUT_DIRNAME]
-    files = []
-
-    exclude_set = set(exclude_dirs)
-    resolved_excludes = [p.resolve() for p in (exclude_paths or [])]
-    for file_path in directory.rglob("*"):
-        if file_path.is_file() and file_path.suffix.lower() in SUPPORTED_EXTENSIONS:
-            resolved = file_path.resolve()
-            if any(ep in resolved.parents for ep in resolved_excludes):
-                continue
-            rel_parts = file_path.relative_to(directory).parts[:-1]
-            if any(part in exclude_set for part in rel_parts):
-                continue
-            files.append(file_path)
-
-    return sorted(files)
+    return list(iter_input_files(directory, output_root, suffixes=SUPPORTED_EXTENSIONS))
 
 
 def get_pdf_page_count(file_path: Path) -> int:

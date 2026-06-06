@@ -85,33 +85,48 @@ class TestGetSupportedFiles:
         (tmp_path / "doc.pdf").write_bytes(b"")
         (tmp_path / "img.png").write_bytes(b"")
         (tmp_path / "notes.txt").write_bytes(b"")
-        files = get_supported_files(tmp_path)
+        files = get_supported_files(tmp_path, tmp_path / "ocr")
         names = {f.name for f in files}
         assert names == {"doc.pdf", "img.png"}
 
-    def test_excludes_canonical_output_dir(self, tmp_path):
-        """The default output dir name (ocr/) is excluded from discovery."""
+    def test_excludes_resolved_output_root(self, tmp_path):
+        """The RESOLVED output root (its prior outputs) is excluded on a rerun."""
         out = tmp_path / "ocr"
         out.mkdir()
         (out / "result.pdf").write_bytes(b"")
         (tmp_path / "input.pdf").write_bytes(b"")
-        files = get_supported_files(tmp_path)
+        files = get_supported_files(tmp_path, out)
         assert len(files) == 1
         assert files[0].name == "input.pdf"
 
-    def test_excludes_absolute_paths(self, tmp_path):
+    def test_does_not_exclude_arbitrary_dir_named_ocr(self, tmp_path):
+        """A non-output dir literally named 'ocr' is NOT skipped (the bug fix).
+
+        Under the user's own .../toolkits/ocr/... tree the old name-based
+        exclusion silently dropped every input. Only the resolved output root is
+        excluded now, so an input under an 'ocr'-named ancestor is processed.
+        """
+        ocr_dir = tmp_path / "ocr"
+        ocr_dir.mkdir()
+        (ocr_dir / "report.pdf").write_bytes(b"")
+        # Output root is elsewhere, so the 'ocr' input dir must survive.
+        files = get_supported_files(tmp_path, tmp_path / "results")
+        assert {f.name for f in files} == {"report.pdf"}
+
+    def test_excludes_custom_output_root_inside_input(self, tmp_path):
+        """A custom -o dir nested in the input tree is excluded by resolved path."""
         sub = tmp_path / "output"
         sub.mkdir()
         (sub / "file.pdf").write_bytes(b"")
         (tmp_path / "input.pdf").write_bytes(b"")
-        files = get_supported_files(tmp_path, exclude_paths=[sub])
-        assert len(files) == 1
+        files = get_supported_files(tmp_path, sub)
+        assert {f.name for f in files} == {"input.pdf"}
 
     def test_recursive(self, tmp_path):
         sub = tmp_path / "nested"
         sub.mkdir()
         (sub / "deep.jpg").write_bytes(b"")
-        files = get_supported_files(tmp_path)
+        files = get_supported_files(tmp_path, tmp_path / "ocr")
         assert len(files) == 1
         assert files[0].name == "deep.jpg"
 

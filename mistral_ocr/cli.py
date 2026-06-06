@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 
 import click
+from ocr_output_contract import resolve_output_root
 from rich.logging import RichHandler
 
 from . import __version__
@@ -66,7 +67,7 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
     "--table-format",
     type=click.Choice(["markdown", "html"], case_sensitive=False),
     default=None,
-    help="Extract tables in a separate format (markdown or html). OCR 3+ only.",
+    help="Render extracted tables into the page body as markdown or html. OCR 3+ only.",
 )
 @click.option(
     "--extract-headers/--no-extract-headers",
@@ -183,7 +184,7 @@ def main(
 
         # Dry-run: list files that would be processed (no API key needed).
         if dry_run:
-            _dry_run(input_path)
+            _dry_run(input_path, output_dir)
             return
 
         # API key provided via CLI: set it before load_dotenv (won't override).
@@ -250,14 +251,21 @@ def main(
         sys.exit(1)
 
 
-def _dry_run(input_path: Path) -> None:
-    """List files that would be processed without calling the API."""
+def _dry_run(input_path: Path, output_dir: Path | None) -> None:
+    """List files that would be processed without calling the API.
+
+    Discovery mirrors the real run exactly: it resolves the same output root and
+    delegates to the contract's discovery so the dry-run never under- or
+    over-reports relative to what would actually be OCR'd (and so it surfaces the
+    output-root exclusion rather than diverging from it).
+    """
+    output_root = resolve_output_root(input_path, output_dir)
     if input_path.is_file():
         size = format_file_size(input_path.stat().st_size)
         console.print(f"  {input_path.name}  ({size})")
         console.print("\n[dim]1 file would be processed (dry run)[/dim]")
     else:
-        files = get_supported_files(input_path)
+        files = get_supported_files(input_path, output_root)
         if not files:
             console.print("[yellow]No supported files found.[/yellow]")
             return
