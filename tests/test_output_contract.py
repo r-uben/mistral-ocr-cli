@@ -44,10 +44,10 @@ def _page(index: int, markdown: str, images: list | None = None) -> SimpleNamesp
     return SimpleNamespace(index=index, markdown=markdown, images=images or [])
 
 
-def _b64_image() -> SimpleNamespace:
+def _b64_image(image_id: str = "fig.png") -> SimpleNamespace:
     import base64
 
-    return SimpleNamespace(image_base64=base64.b64encode(_PNG_1x1).decode(), id="fig.png")
+    return SimpleNamespace(image_base64=base64.b64encode(_PNG_1x1).decode(), id=image_id)
 
 
 class FakeMistralProcessor:
@@ -188,6 +188,151 @@ def test_embedded_figures_conform(tmp_path: Path) -> None:
     doc_dir = doc_dir_for(tmp_path / "out", "withfig.png")
     body = markdown_path_for(doc_dir, "withfig.png").read_text()
     assert "figures/figure_1_page1.png" in body
+
+
+def test_embedded_image_placeholders_resolve_on_disk(tmp_path: Path) -> None:
+    """Byte-faithful real Mistral output → every inline image link resolves.
+
+    Round-2 HIGH blocker: real Mistral ``page.markdown`` carries inline
+    placeholders like ``![img-0.jpeg](img-0.jpeg)`` whose target is the API's
+    ``page.images[i].id``. The old code kept ``page.markdown`` verbatim AND
+    appended a separate ``./figures/...`` link, leaving the original ``img-0.jpeg``
+    as a DANGLING local link that the v0.1.2 conformance harness resolves on disk
+    and rejects ("dangling inline image link"). This fixture reproduces that real
+    shape (markdown placeholder + matching image id); the processor must rewrite
+    the placeholder in place to the canonical figure file so the produced body
+    has NO dangling link and assert_conforms passes.
+    """
+    img = tmp_path / "paper.png"
+    img.write_bytes(_PNG_1x1)
+
+    def responder(_kwargs):
+        # The REAL Mistral shape: an inline ![img-0.jpeg](img-0.jpeg) placeholder
+        # whose target equals page.images[0].id. (The old happy-path fixture had
+        # no placeholder, which is exactly why it could not catch this bug.)
+        return SimpleNamespace(
+            pages=[
+                _page(
+                    0,
+                    "Intro text.\n\n![img-0.jpeg](img-0.jpeg)\n\nTrailing text.",
+                    images=[_b64_image("img-0.jpeg")],
+                )
+            ]
+        )
+
+    proc = FakeMistralProcessor.make(responder, include_images=True)
+    outcome = proc.process(img, output_path=tmp_path / "out")
+    assert outcome.exit_code == 0
+
+    # The conformance harness resolves EVERY inline ![..](target) on disk; this
+    # would have FAILED before the placeholder-rewrite fix.
+    assert_conforms(
+        tmp_path / "out",
+        [ExpectedDoc(rel_key="paper.png", pages=1, status="completed", figures=[(1, 1)])],
+    )
+
+    body = markdown_path_for(doc_dir_for(tmp_path / "out", "paper.png"), "paper.png").read_text()
+    # The placeholder was rewritten IN PLACE to the canonical figure file...
+    assert "![img-0.jpeg](./figures/figure_1_page1.png)" in body
+    # ...and the dangling local link is GONE (no duplicate appended link either).
+    assert "(img-0.jpeg)" not in body
+    assert body.count("figure_1_page1.png") == 1
+    assert (doc_dir_for(tmp_path / "out", "paper.png") / "figures" / "figure_1_page1.png").exists()
+
+
+def test_unwritten_placeholder_is_stripped_not_dangling(tmp_path: Path) -> None:
+    """An inline placeholder with no extractable image is stripped, not dangling.
+
+    If the API emits an ``![missing.jpeg](missing.jpeg)`` placeholder but no
+    decodable image bytes for it, there is no figure to point at. The body must
+    not ship a dangling local link; the placeholder is stripped (alt text kept)
+    so conformance still passes.
+    """
+    img = tmp_path / "ghost.png"
+    img.write_bytes(_PNG_1x1)
+
+    def responder(_kwargs):
+        # Placeholder present in markdown but NO images list → nothing to resolve.
+        return SimpleNamespace(
+            pages=[_page(0, "Body.\n\n![missing.jpeg](missing.jpeg)\n\nEnd.", images=[])]
+        )
+
+    proc = FakeMistralProcessor.make(responder, include_images=True)
+    outcome = proc.process(img, output_path=tmp_path / "out")
+    assert outcome.exit_code == 0
+
+    assert_conforms(
+        tmp_path / "out",
+        [ExpectedDoc(rel_key="ghost.png", pages=1, status="completed")],
+    )
+    body = markdown_path_for(doc_dir_for(tmp_path / "out", "ghost.png"), "ghost.png").read_text()
+    assert "(missing.jpeg)" not in body
+
+
+def test_unreadable_input_recorded_failed_batch_continues(tmp_path: Path) -> None:
+    """SYS-02: an input unreadable at the pre-check is failed, batch continues.
+
+    safe_checksum returns None for an unreadable file instead of raising an
+    OSError that would abort the whole directory run with zero output. The bad
+    file is recorded status=failed (nonzero exit) and the good files still
+    process and conform.
+    """
+    import os
+    import stat
+
+    root = tmp_path / "in"
+    root.mkdir()
+    good = root / "good.png"
+    bad = root / "bad.png"
+    good.write_bytes(_PNG_1x1)
+    bad.write_bytes(_PNG_1x1)
+    # Make the input unreadable so safe_checksum cannot hash it.
+    os.chmod(bad, 0)
+
+    try:
+        proc = FakeMistralProcessor.make(
+            lambda _k: SimpleNamespace(pages=[_page(0, "content")]), include_images=False
+        )
+        outcome = proc.process(root, output_path=tmp_path / "out")
+
+        # The batch did NOT abort: good file completed, bad file failed.
+        assert outcome.completed == 1
+        assert outcome.failed == 1
+        assert outcome.exit_code != 0
+        assert "bad.png" in outcome.failures
+
+        # The unreadable input is durably recorded status=failed in the root index.
+        root_index = json.loads((tmp_path / "out" / "metadata.json").read_text())
+        assert root_index["files"]["bad.png"]["status"] == "failed"
+        assert root_index["files"]["good.png"]["status"] == "completed"
+    finally:
+        os.chmod(bad, stat.S_IRUSR | stat.S_IWUSR)
+
+
+def test_fingerprint_keys_extract_flags_via_extra(tmp_path: Path) -> None:
+    """A re-run toggling an OCR-3 extract flag reprocesses (extra-keyed fp).
+
+    The output-affecting flags (table_format, extract_header/footer,
+    include_images) are passed to run_fingerprint via the v0.1.2 ``extra`` dict,
+    so flipping --extract-headers on a re-run changes the fingerprint and forces
+    reprocessing rather than serving a stale result keyed only on the checksum.
+    """
+    img = tmp_path / "fp2.png"
+    img.write_bytes(_PNG_1x1)
+    calls = {"n": 0}
+
+    def responder(_kwargs):
+        calls["n"] += 1
+        return SimpleNamespace(pages=[_page(0, "content")])
+
+    out = tmp_path / "out"
+    FakeMistralProcessor.make(responder, include_images=False).process(img, output_path=out)
+    assert calls["n"] == 1
+
+    # Same input + checksum, but extract_header now on → different fingerprint.
+    proc2 = FakeMistralProcessor.make(responder, include_images=False, extract_header=True)
+    proc2.process(img, output_path=out)
+    assert calls["n"] == 2  # reprocessed, not silently reused
 
 
 def test_checksum_resume_skip_emits_output_path(tmp_path: Path) -> None:

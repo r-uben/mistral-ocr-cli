@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import tempfile
 import threading
 import time
@@ -47,6 +48,7 @@ from typing import Any
 
 from mistralai import Mistral
 from ocr_output_contract import (
+    FIGURES_DIRNAME,
     DocMetadata,
     RootIndex,
     RunOutcome,
@@ -60,6 +62,7 @@ from ocr_output_contract import (
     relative_key,
     resolve_output_root,
     run_fingerprint,
+    safe_checksum,
     sha256_checksum,
     utc_timestamp,
     write_doc_metadata,
@@ -100,6 +103,88 @@ MAX_PAGES_PER_REQUEST = 1000
 #: 4xx range (401 auth, 400/422 validation, ...) is permanent and must fail fast.
 _RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 
+#: Matches a markdown inline image link ``![alt](target)``, capturing the alt
+#: text and the raw target separately. Used to rewrite/strip the API's inline
+#: image placeholders so the produced body never carries a dangling local link.
+_INLINE_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+
+
+def _is_external_target(target: str) -> bool:
+    """True for a target the conformance harness does not resolve on disk."""
+    t = target.strip().lower()
+    return t.startswith(("http://", "https://", "data:", "mailto:", "//", "#")) or t.startswith(
+        "<http"
+    )
+
+
+def _rewrite_inline_image_link(markdown: str, image_id: str, target: str) -> tuple[str, bool]:
+    """Rewrite an inline ``![..](image_id)`` placeholder to a canonical link.
+
+    Replaces every inline image whose raw target equals ``image_id`` (the API's
+    placeholder reference, e.g. ``img-0.jpeg``) with a link to the canonical
+    figure file ``./figures/<target>``, preserving the original alt text. Returns
+    ``(new_markdown, replaced)`` where ``replaced`` is True iff at least one
+    placeholder matched. Matching is on the exact target token so unrelated
+    image links are untouched.
+    """
+    if not image_id:
+        return markdown, False
+    replaced = False
+
+    def _sub(match: re.Match[str]) -> str:
+        nonlocal replaced
+        alt, raw = match.group(1), match.group(2).strip()
+        if raw == image_id:
+            replaced = True
+            label = alt or f"Figure (page {target})"
+            return (
+                f"![{alt}](./{FIGURES_DIRNAME}/{target})"
+                if alt
+                else f"![{label}](./{FIGURES_DIRNAME}/{target})"
+            )
+        return match.group(0)
+
+    return _INLINE_IMAGE_RE.sub(_sub, markdown), replaced
+
+
+def _strip_unresolved_image_links(markdown: str) -> str:
+    """Drop any inline image link whose LOCAL target was never written.
+
+    A figure that failed to save (Pillow could not decode/encode it) leaves the
+    API's ``![..](img-N.jpeg)`` placeholder unrewritten. The conformance harness
+    resolves every local inline link on disk, so such a dangling placeholder
+    would FAIL conformance. We strip it (degrading to the alt text, or nothing)
+    rather than ship a broken link. External targets (http/data/anchors) are
+    left untouched.
+    """
+
+    def _sub(match: re.Match[str]) -> str:
+        alt, raw = match.group(1), match.group(2).strip()
+        # Already-canonical figure links and external targets are kept verbatim.
+        if raw.startswith(f"./{FIGURES_DIRNAME}/") or raw.startswith(f"{FIGURES_DIRNAME}/"):
+            return match.group(0)
+        if _is_external_target(raw):
+            return match.group(0)
+        # A bare local target (e.g. img-0.jpeg) that survived rewriting points at
+        # a figure that was never written: drop the link, keep any alt text.
+        return alt
+
+    return _INLINE_IMAGE_RE.sub(_sub, markdown)
+
+
+@dataclass(frozen=True)
+class _SavedFigure:
+    """A figure that was written to disk, with the API id that referenced it.
+
+    ``image_id`` is the API's original image reference (e.g. ``img-0.jpeg``) used
+    to rewrite the matching inline placeholder; ``figure_number`` / ``page_number``
+    give the canonical ``figure_<N>_page<P>.png`` identity.
+    """
+
+    image_id: str | None
+    figure_number: int
+    page_number: int
+
 
 @dataclass
 class OCRResult:
@@ -107,14 +192,19 @@ class OCRResult:
 
     ``pages`` holds the per-page markdown in order (already including any folded
     OCR 3 extras). ``page_images`` maps a 1-indexed page number to the list of
-    raw image-bytes extracted from that page. ``status`` maps to the contract
-    enum: a document that could not be opened/processed at all is ``FAILED``;
-    one whose API call returned zero pages is also ``FAILED``.
+    ``(image_id, raw_bytes)`` pairs extracted from that page. The ``image_id`` is
+    the API's reference for the image (e.g. ``img-0.jpeg``); it is what the page
+    markdown's inline ``![img-0.jpeg](img-0.jpeg)`` placeholder points at, so we
+    carry it through to rewrite that placeholder to the canonical figure filename
+    (otherwise the body keeps a dangling local link that fails conformance).
+    ``status`` maps to the contract enum: a document that could not be
+    opened/processed at all is ``FAILED``; one whose API call returned zero pages
+    is also ``FAILED``.
     """
 
     file_path: Path
     pages: list[str]
-    page_images: dict[int, list[bytes]] = field(default_factory=dict)
+    page_images: dict[int, list[tuple[str | None, bytes]]] = field(default_factory=dict)
     processing_time: float = 0.0
     error: str | None = None
     #: Non-fatal note (e.g. ``--max-pages`` truncation), recorded in metadata.
@@ -331,9 +421,11 @@ class OCRProcessor:
 
         The contract supplies the ``## Page N`` header at assembly time, so this
         produces only the page *body*: optional page dimensions, header/footer
-        quotes, the OCR text, the structured tables, and hyperlinks. Embedded
-        image links are appended later (after figures are saved with canonical
-        names).
+        quotes, the OCR text, the structured tables, and hyperlinks. The API's
+        inline image placeholders (``![img-0.jpeg](img-0.jpeg)``) are kept here
+        verbatim and later rewritten to canonical figure links / stripped by
+        :meth:`_render_page_with_figures` once figures are saved, so the produced
+        body never carries a dangling local image link.
 
         Tables: when ``--table-format=markdown|html`` is set, Mistral OCR returns
         tables in the structured ``page.tables`` field, NOT inline in
@@ -438,15 +530,23 @@ class OCRProcessor:
         return None
 
     @staticmethod
-    def _page_image_bytes(page: Any) -> list[bytes]:
-        """Decode the embedded base64 images on one API page into raw bytes."""
-        out: list[bytes] = []
+    def _page_image_bytes(page: Any) -> list[tuple[str | None, bytes]]:
+        """Decode the embedded base64 images on one API page into raw bytes.
+
+        Returns ``(image_id, raw_bytes)`` pairs, preserving the API's image id
+        (e.g. ``img-0.jpeg``) so the page markdown's inline placeholder pointing
+        at that id can later be rewritten to the canonical figure filename.
+        """
+        out: list[tuple[str | None, bytes]] = []
         for image in getattr(page, "images", None) or []:
             b64 = getattr(image, "image_base64", None) or getattr(image, "base64", None)
             if not b64:
                 continue
+            image_id = getattr(image, "id", None)
             try:
-                out.append(decode_base64_image(b64))
+                out.append(
+                    (str(image_id) if image_id is not None else None, decode_base64_image(b64))
+                )
             except Exception as exc:
                 logger.warning("Failed to decode embedded image: %s", exc)
         return out
@@ -509,9 +609,9 @@ class OCRProcessor:
         markdown_path = markdown_path_for(doc_dir, rel_key)
 
         if result.pages:
-            page_links = self._save_figures(result, doc_dir)
+            page_figures = self._save_figures(result, doc_dir)
             pages = [
-                self._append_links(text, page_links.get(idx, []))
+                self._render_page_with_figures(text, page_figures.get(idx, []))
                 for idx, text in enumerate(result.pages, start=1)
             ]
             body = assemble_pages(pages)
@@ -526,29 +626,53 @@ class OCRProcessor:
         return markdown_path
 
     @staticmethod
-    def _append_links(text: str, links: list[str]) -> str:
-        """Append figure markdown links to a page body."""
-        if not links:
-            return text
-        joined = "\n\n".join(links)
-        return f"{text}\n\n{joined}" if text else joined
+    def _render_page_with_figures(text: str, figures: list[_SavedFigure]) -> str:
+        """Resolve a page's figures into its markdown body.
 
-    def _save_figures(self, result: OCRResult, doc_dir: Path) -> dict[int, list[str]]:
-        """Persist extracted images as PNG; return per-page resolving md links.
+        For each saved figure, the API's inline placeholder ``![..](image_id)``
+        is rewritten IN PLACE to the canonical ``./figures/figure_<N>_page<P>.png``
+        link, so no dangling local image link survives (the conformance harness
+        resolves every inline link on disk; an unrewritten ``img-0.jpeg`` link
+        would point at a file that was never written and FAIL conformance). A
+        figure whose id is NOT referenced inline (the engine extracted an image
+        the model did not place in the markdown) is appended at the end so it is
+        still surfaced with a resolving link rather than silently dropped.
+
+        Finally, any inline image link still pointing at a bare LOCAL target
+        (e.g. a placeholder whose figure failed to save, or one the API emitted
+        with no extractable image bytes) is stripped, so the body can never carry
+        a dangling local image link regardless of what the API returned.
+        """
+        for fig in figures:
+            link = figure_markdown_link(fig.figure_number, fig.page_number)
+            target = figure_filename(fig.figure_number, fig.page_number)
+            replaced = False
+            if fig.image_id:
+                text, replaced = _rewrite_inline_image_link(text, fig.image_id, target)
+            if not replaced:
+                text = f"{text}\n\n{link}" if text else link
+        return _strip_unresolved_image_links(text)
+
+    def _save_figures(self, result: OCRResult, doc_dir: Path) -> dict[int, list[_SavedFigure]]:
+        """Persist extracted images as PNG; return per-page saved-figure records.
 
         Figures are numbered globally (``figure_1``, ``figure_2``, ...) across the
         whole document and tagged with their source page, matching the canonical
-        ``figure_<N>_page<P>.png`` naming.
+        ``figure_<N>_page<P>.png`` naming. Each returned record carries the API's
+        original ``image_id`` so the page renderer can rewrite the matching inline
+        placeholder. A figure that fails to save is simply not recorded, so its
+        inline placeholder is left for the renderer to strip (never a dangling
+        local link in the produced body).
         """
         if not (result.page_images and self.config.include_images):
             return {}
 
         figures_dir = figures_dir_for(doc_dir)
         figures_dir.mkdir(parents=True, exist_ok=True)
-        links: dict[int, list[str]] = {}
+        saved: dict[int, list[_SavedFigure]] = {}
         figure_counter = 0
         for page_no in sorted(result.page_images):
-            for raw in result.page_images[page_no]:
+            for image_id, raw in result.page_images[page_no]:
                 figure_counter += 1
                 filename = figure_filename(figure_counter, page_no)
                 img_path = figures_dir / filename
@@ -557,33 +681,42 @@ class OCRProcessor:
                     if image.mode not in ("RGB", "RGBA"):
                         image = image.convert("RGB")
                     image.save(img_path, format="PNG")
-                    links.setdefault(page_no, []).append(
-                        figure_markdown_link(figure_counter, page_no)
+                    saved.setdefault(page_no, []).append(
+                        _SavedFigure(
+                            image_id=image_id,
+                            figure_number=figure_counter,
+                            page_number=page_no,
+                        )
                     )
                 except Exception as exc:
                     logger.warning(
                         "Failed to save figure %d (page %d): %s", figure_counter, page_no, exc
                     )
                     figure_counter -= 1
-        return links
+        return saved
 
     def _run_fingerprint(self) -> str:
         """Fingerprint of the run config that affects *what output is produced*.
 
-        Beyond model + backend, mistral's OCR-3 toggles (table format, header /
-        footer extraction, embedded-image extraction) change the produced
-        markdown, so they are folded into the contract's ``task`` selector. A
+        Beyond model + backend, mistral's OCR-3 toggles change the produced
+        markdown, so they are passed to the contract's ``run_fingerprint`` via the
+        ``extra`` dict (the v0.1.2 channel for engine-specific output-affecting
+        flags) rather than being string-mangled into ``task``: the resolved table
+        format, header / footer extraction, and embedded-image extraction. A
         re-run under a different ``--table-format`` / ``--extract-headers`` /
-        ``--model`` therefore reprocesses instead of silently reusing a cached
-        result keyed only on the input checksum.
+        ``--extract-footers`` / ``--no-images`` / ``--model`` therefore
+        reprocesses instead of silently reusing a cached result keyed only on the
+        input checksum. ``extra`` carries the RESOLVED effective values (including
+        falsy ones), so ``True``/``False`` stay distinct and key order is
+        irrelevant.
         """
-        task = (
-            f"table={self.config.table_format or ''}"
-            f";header={int(self.config.extract_header)}"
-            f";footer={int(self.config.extract_footer)}"
-            f";images={int(self.config.include_images)}"
-        )
-        fingerprint: str = run_fingerprint(model=self.config.model, backend=BACKEND, task=task)
+        extra = {
+            "table_format": self.config.table_format or None,
+            "extract_header": bool(self.config.extract_header),
+            "extract_footer": bool(self.config.extract_footer),
+            "include_images": bool(self.config.include_images),
+        }
+        fingerprint: str = run_fingerprint(model=self.config.model, backend=BACKEND, extra=extra)
         return fingerprint
 
     def _build_doc_metadata(
@@ -684,6 +817,33 @@ class OCRProcessor:
         except Exception:
             logger.debug("Best-effort root-index failure write also failed for %s", rel_key)
 
+    def _record_unreadable_input(
+        self, file_path: Path, output_root: Path, rel_key: str, index: RootIndex
+    ) -> DocMetadata:
+        """Record a ``status=failed`` entry for an input unreadable at pre-check.
+
+        Discovery can yield a file that is unreadable by the time the idempotency
+        pre-check hashes it (permission denied, deleted/replaced mid-run, a broken
+        symlink that passed discovery). Using the contract's ``safe_checksum`` the
+        ``OSError`` no longer propagates and aborts the whole run (the SYS-02 "one
+        bad file aborts the batch" failure mode); instead it is folded into a
+        durable per-file failure and the batch CONTINUES.
+        """
+        meta = DocMetadata(
+            status=Status.FAILED,
+            checksum="sha256:",
+            model=self.config.model,
+            backend=BACKEND,
+            processing_time=0.0,
+            timestamp=utc_timestamp(),
+            output_path=str(markdown_path_for(doc_dir_for(output_root, rel_key), rel_key)),
+            pages=0,
+            error=f"input unreadable at idempotency pre-check: {file_path}",
+            fingerprint=self._run_fingerprint(),
+        )
+        self._best_effort_record_failure(output_root, rel_key, index, meta)
+        return meta
+
     # ------------------------------------------------------------------
     # Orchestration
     # ------------------------------------------------------------------
@@ -717,12 +877,22 @@ class OCRProcessor:
         rel_key = relative_key(file_path, file_path.parent)
         index = RootIndex(output_root)
 
+        # SYS-02: an input unreadable at the pre-check (permission denied, deleted
+        # mid-run, broken symlink) must be recorded status=failed and NOT abort —
+        # safe_checksum returns None instead of raising OSError.
+        checksum = safe_checksum(file_path)
+        if checksum is None:
+            meta = self._record_unreadable_input(file_path, output_root, rel_key, index)
+            outcome.add(meta.status, detail=rel_key)
+            err_console.print(f"FAILED {rel_key}: {meta.error}")
+            return outcome
+
         # Fix (audit HIGH): content-aware skip — status==completed AND checksum
         # match AND output still on disk AND a matching run fingerprint (model /
         # OCR-3 toggles) — so an in-place edit, a deleted output, or a config
         # change all force reprocessing instead of serving stale output.
         if not reprocess and index.is_completed(
-            rel_key, sha256_checksum(file_path), fingerprint=self._run_fingerprint()
+            rel_key, checksum, fingerprint=self._run_fingerprint()
         ):
             console.print(f"[yellow]Already processed:[/yellow] {file_path.name}")
             console.print("[dim]Use --reprocess to force reprocessing[/dim]")
@@ -775,8 +945,17 @@ class OCRProcessor:
         files_to_process: list[tuple[Path, str]] = []
         for f in files:
             rel_key = relative_key(f, dir_path)
+            # SYS-02: an input unreadable at the pre-check is recorded failed and
+            # the batch CONTINUES — safe_checksum returns None instead of raising
+            # an OSError that would abort the whole directory run.
+            checksum = safe_checksum(f)
+            if checksum is None:
+                meta = self._record_unreadable_input(f, output_root, rel_key, index)
+                outcome.add(meta.status, detail=rel_key)
+                err_console.print(f"FAILED {rel_key}: {meta.error}")
+                continue
             if not reprocess and index.is_completed(
-                rel_key, sha256_checksum(f), fingerprint=self._run_fingerprint()
+                rel_key, checksum, fingerprint=self._run_fingerprint()
             ):
                 if self.config.verbose:
                     console.print(f"[dim]Skipping: {rel_key}[/dim]")
@@ -788,8 +967,11 @@ class OCRProcessor:
                 files_to_process.append((f, rel_key))
 
         if not files_to_process:
-            console.print("[green]All files already processed.[/green]")
-            console.print("[dim]Use --reprocess to force reprocessing.[/dim]")
+            if outcome.has_failures:
+                console.print("[yellow]No files left to process (some inputs failed).[/yellow]")
+            else:
+                console.print("[green]All files already processed.[/green]")
+                console.print("[dim]Use --reprocess to force reprocessing.[/dim]")
             return outcome
 
         workers = self.config.max_workers

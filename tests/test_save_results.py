@@ -162,13 +162,15 @@ _PNG_1x1 = (
 )
 
 
-def _result_with_image(tmp_path, page_no=1, image_bytes=_PNG_1x1):
+def _result_with_image(tmp_path, page_no=1, image_bytes=_PNG_1x1, image_id="img-0.jpeg"):
     fp = tmp_path / "doc.png"
     fp.write_bytes(_PNG_1x1)
     return OCRResult(
         file_path=fp,
         pages=["text"],
-        page_images={page_no: [image_bytes]},
+        # page_images now carries (image_id, raw_bytes) pairs so the inline
+        # placeholder ![..](image_id) can be rewritten to the canonical name.
+        page_images={page_no: [(image_id, image_bytes)]},
     )
 
 
@@ -179,13 +181,17 @@ class TestFigures:
         doc_dir.mkdir()
         result = _result_with_image(tmp_path, page_no=1)
 
-        links = proc._save_figures(result, doc_dir)
+        saved = proc._save_figures(result, doc_dir)
 
         # Canonical naming: figure_<N>_page<P>.png (NOT page1_img1.png).
         assert (doc_dir / "figures" / "figure_1_page1.png").exists()
         assert not (doc_dir / "figures" / "page1_img1.png").exists()
-        # Returns a resolving relative link for the page that produced it.
-        assert links[1] == ["![Figure 1 (page 1)](./figures/figure_1_page1.png)"]
+        # Returns a saved-figure record carrying the API image id + canonical
+        # number/page for the page that produced it.
+        rec = saved[1][0]
+        assert rec.image_id == "img-0.jpeg"
+        assert rec.figure_number == 1
+        assert rec.page_number == 1
 
     def test_figure_numbering_is_global_with_source_page(self, tmp_path):
         """Figures are numbered globally across the doc, tagged by source page."""
@@ -195,7 +201,10 @@ class TestFigures:
         result = OCRResult(
             file_path=tmp_path / "doc.png",
             pages=["a", "b"],
-            page_images={1: [_PNG_1x1], 2: [_PNG_1x1, _PNG_1x1]},
+            page_images={
+                1: [("img-0.jpeg", _PNG_1x1)],
+                2: [("img-1.jpeg", _PNG_1x1), ("img-2.jpeg", _PNG_1x1)],
+            },
         )
         (tmp_path / "doc.png").write_bytes(_PNG_1x1)
 
