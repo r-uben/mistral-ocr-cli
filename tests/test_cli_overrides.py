@@ -1,10 +1,12 @@
 """Tests for CLI config overrides and process() orchestration."""
 
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
+from ocr_output_contract import RunOutcome, doc_dir_for, markdown_path_for
 
 from mistral_ocr.cli import main
 from mistral_ocr.config import Config
@@ -16,11 +18,14 @@ def runner():
     return CliRunner()
 
 
-def _mock_processor():
-    """Return a mock OCRProcessor that does nothing."""
+def _mock_processor(outcome: RunOutcome | None = None):
+    """Return a mock OCRProcessor whose process() yields a real RunOutcome.
+
+    The CLI inspects the returned RunOutcome (outputs / has_failures /
+    exit_code), so the mock must hand back a genuine outcome, not ``None``.
+    """
     mock = MagicMock(spec=OCRProcessor)
-    mock.errors = []
-    mock.process.return_value = None
+    mock.process.return_value = outcome if outcome is not None else RunOutcome()
     return mock
 
 
@@ -109,27 +114,12 @@ class TestCliOverrides:
             config = mock_cls.call_args[0][0]
             assert config.max_pages == 100
 
-    def test_no_metadata_override(self, runner, tmp_path, monkeypatch):
-        monkeypatch.setenv("MISTRAL_API_KEY", "key")
-        pdf = tmp_path / "doc.pdf"
-        pdf.write_bytes(b"%PDF")
-
-        with patch("mistral_ocr.cli.OCRProcessor") as mock_cls:
-            mock_cls.return_value = _mock_processor()
-            runner.invoke(main, [str(pdf), "--no-metadata"])
-            config = mock_cls.call_args[0][0]
-            assert config.include_metadata is False
-
-    def test_no_page_headings_override(self, runner, tmp_path, monkeypatch):
-        monkeypatch.setenv("MISTRAL_API_KEY", "key")
-        pdf = tmp_path / "doc.pdf"
-        pdf.write_bytes(b"%PDF")
-
-        with patch("mistral_ocr.cli.OCRProcessor") as mock_cls:
-            mock_cls.return_value = _mock_processor()
-            runner.invoke(main, [str(pdf), "--no-page-headings"])
-            config = mock_cls.call_args[0][0]
-            assert config.include_page_headings is False
+    # NOTE: --no-metadata / --no-page-headings are now deprecated no-ops. The
+    # canonical output contract owns the markdown body (always clean: ## Page N,
+    # no header block, no frontmatter) and always writes the dual-level JSON
+    # sidecars, so there is no config field for them to override. The flags are
+    # kept hidden for invocation compatibility only; their override tests are
+    # gone deliberately.
 
     def test_defaults_not_overridden(self, runner, tmp_path, monkeypatch):
         """When no CLI flags are passed, config keeps env/default values."""
@@ -200,18 +190,20 @@ class TestCliErrors:
 
 
 class TestProcessOrchestration:
-    """Test the process() method routing and skip logic."""
+    """Test the process() method routing, skip logic and RunOutcome contract.
+
+    The processor returns a :class:`RunOutcome` (the contract's exit-code
+    accumulator) and writes through the shared package, so these assert against
+    the canonical ``<input-parent>/ocr/`` output root and the RunOutcome tallies
+    rather than the removed ``processed_files`` / ``errors`` lists.
+    """
 
     def _make_real_processor(self, **overrides):
-        defaults = {"api_key": "test", "save_original_images": False}
+        defaults = {"api_key": "test", "include_images": False}
         defaults.update(overrides)
         proc = OCRProcessor.__new__(OCRProcessor)
         proc.config = Config(**defaults)
         proc.client = MagicMock()
-        proc.errors = []
-        proc.processed_files = []
-        import threading
-
         proc._lock = threading.Lock()
         return proc
 
@@ -223,12 +215,13 @@ class TestProcessOrchestration:
         response = SimpleNamespace(pages=[SimpleNamespace(index=0, markdown="Hello", images=[])])
         proc.client.ocr.process.return_value = response
 
-        proc.process(img)
-        assert len(proc.processed_files) == 1
-        assert len(proc.errors) == 0
-        # Check output was created
-        out_dir = tmp_path / "mistral_ocr_output"
-        assert (out_dir / "doc" / "doc.md").exists()
+        outcome = proc.process(img)
+        assert outcome.completed == 1
+        assert outcome.exit_code == 0
+        # Output goes to the canonical default root <input-parent>/ocr/.
+        out_dir = tmp_path / "ocr"
+        assert markdown_path_for(doc_dir_for(out_dir, "doc.png"), "doc.png").exists()
+        assert (out_dir / "metadata.json").exists()
 
     def test_single_file_skip_already_processed(self, tmp_path):
         proc = self._make_real_processor()
@@ -240,10 +233,31 @@ class TestProcessOrchestration:
         proc.client.ocr.process.return_value = response
         proc.process(img)
 
-        # Second process — should skip
+        # Second process — content unchanged → checksum match → skip (no API call).
         proc.client.ocr.process.reset_mock()
         proc.process(img)
         proc.client.ocr.process.assert_not_called()
+
+    def test_in_place_edit_forces_reprocess(self, tmp_path):
+        """Audit HIGH fix: a same-path content change must NOT be skipped.
+
+        The old resolved-path-equality skip served stale output on in-place
+        edits. The contract's checksum-based ``RootIndex.is_completed`` now
+        invalidates the cache when the bytes change.
+        """
+        proc = self._make_real_processor()
+        img = tmp_path / "doc.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
+
+        response = SimpleNamespace(pages=[SimpleNamespace(index=0, markdown="v1", images=[])])
+        proc.client.ocr.process.return_value = response
+        proc.process(img)
+
+        # Replace the file's bytes at the SAME path → checksum differs → re-OCR.
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\xff" * 80)
+        proc.client.ocr.process.reset_mock()
+        proc.process(img)
+        proc.client.ocr.process.assert_called_once()
 
     def test_single_file_reprocess(self, tmp_path):
         proc = self._make_real_processor()
@@ -254,7 +268,7 @@ class TestProcessOrchestration:
         proc.client.ocr.process.return_value = response
         proc.process(img)
 
-        # Reprocess with flag
+        # Reprocess with flag → forces a second API call even with matching checksum.
         proc.process(img, reprocess=True)
         assert proc.client.ocr.process.call_count == 2
 
@@ -264,9 +278,15 @@ class TestProcessOrchestration:
         img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
 
         proc.client.ocr.process.side_effect = RuntimeError("API down")
-        proc.process(img)
-        assert len(proc.errors) == 1
-        assert len(proc.processed_files) == 0
+        outcome = proc.process(img)
+        assert outcome.failed == 1
+        assert outcome.completed == 0
+        assert outcome.exit_code != 0
+        # The failure is recorded (status=failed), never silently dropped.
+        import json
+
+        entry = json.loads((tmp_path / "ocr" / "metadata.json").read_text())["files"]["doc.png"]
+        assert entry["status"] == "failed"
 
     def test_nonexistent_path_raises(self, tmp_path):
         proc = self._make_real_processor()
@@ -282,5 +302,11 @@ class TestProcessOrchestration:
 
         response = SimpleNamespace(pages=[SimpleNamespace(index=0, markdown="text", images=[])])
         proc.client.ocr.process.return_value = response
-        proc.process(input_dir)
-        assert len(proc.processed_files) == 2
+        outcome = proc.process(input_dir)
+        assert outcome.completed == 2
+        assert outcome.exit_code == 0
+        # Directory default root is <input>/ocr/. PNG inputs disambiguate the
+        # doc folder as <stem>_png per the v0.1.1 same-stem/different-ext fix.
+        out_root = input_dir / "ocr"
+        assert markdown_path_for(doc_dir_for(out_root, "a.png"), "a.png").exists()
+        assert markdown_path_for(doc_dir_for(out_root, "b.png"), "b.png").exists()

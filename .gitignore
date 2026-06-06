@@ -78,6 +78,7 @@ cover/
 # Virtual environments
 .env
 .venv
+.venv*
 env/
 venv/
 ENV/
@@ -116,6 +117,7 @@ dmypy.json
 # OCR output directories
 mistral_ocr_output/
 *_ocr_output/
+ocr/
 output/
 results/
 extracted/

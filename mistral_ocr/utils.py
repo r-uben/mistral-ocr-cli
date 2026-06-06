@@ -1,12 +1,23 @@
-"""Utility functions for Mistral OCR."""
+"""Utility functions for Mistral OCR.
+
+Output-shape concerns (output-root resolution, input-relative keying, the
+per-document layout, page assembly, metadata, figure naming and the exit-code
+policy) are owned by the shared ``ocr-output-contract`` package and live in
+:mod:`mistral_ocr.processor`. What remains here is mistral-specific I/O: MIME
+sniffing / data-URI construction for the API, base64 image decoding, PDF page
+counting + splitting for the API's per-request page cap, and supported-file
+discovery for batch runs.
+"""
+
+from __future__ import annotations
 
 import base64
-import json
 import mimetypes
-import time
 from pathlib import Path
 
-# Canonical extension sets — used by processor.py and get_supported_files()
+from ocr_output_contract import iter_input_files
+
+# Canonical extension sets — used by processor.py and discovery.
 DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".pptx"}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tiff", ".avif"}
 SUPPORTED_EXTENSIONS = DOCUMENT_EXTENSIONS | IMAGE_EXTENSIONS
@@ -48,46 +59,25 @@ def create_data_uri(file_path: Path) -> str:
     return f"data:{mime_type};base64,{base64_data}"
 
 
-def save_base64_image(base64_string: str, output_path: Path) -> None:
-    """Save a base64 encoded image to file."""
-    image_data = base64.b64decode(base64_string)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as f:
-        f.write(image_data)
+def decode_base64_image(base64_string: str) -> bytes:
+    """Decode a base64 (optionally data-URI-prefixed) image into raw bytes."""
+    if "," in base64_string and base64_string.lstrip().startswith("data:"):
+        base64_string = base64_string.split(",", 1)[1]
+    return base64.b64decode(base64_string)
 
 
-def get_supported_files(
-    directory: Path,
-    exclude_dirs: list[str] | None = None,
-    exclude_paths: list[Path] | None = None,
-) -> list[Path]:
-    """Get all supported files from a directory, excluding output directories.
+def get_supported_files(directory: Path, output_root: Path) -> list[Path]:
+    """Get all supported input files under ``directory``, excluding outputs.
 
-    Args:
-        directory: Root directory to search.
-        exclude_dirs: Directory *names* to skip (matched against each path component).
-        exclude_paths: Resolved absolute paths to skip (any file underneath is excluded).
+    Discovery is delegated to the contract's :func:`iter_input_files`, which
+    recurses ``directory`` and prunes everything at or under the RESOLVED
+    ``output_root`` (so the engine never re-ingests its own ``.md``/figure
+    outputs on a rerun). It targets the *real* output directory by resolved path,
+    not any path component that merely happens to be named ``ocr`` — fixing the
+    "files under any directory named 'ocr' silently skipped" bug that was acutely
+    fatal under this user's own ``.../toolkits/ocr/...`` tree.
     """
-    supported_extensions = SUPPORTED_EXTENSIONS
-    if exclude_dirs is None:
-        exclude_dirs = ["mistral_ocr_output"]
-    files = []
-
-    exclude_set = set(exclude_dirs)
-    resolved_excludes = [p.resolve() for p in (exclude_paths or [])]
-    for file_path in directory.rglob("*"):
-        if file_path.is_file() and file_path.suffix.lower() in supported_extensions:
-            resolved = file_path.resolve()
-            # Skip files inside excluded absolute paths
-            if any(ep in resolved.parents for ep in resolved_excludes):
-                continue
-            # Skip files inside excluded directory names (check parent dirs only)
-            rel_parts = file_path.relative_to(directory).parts[:-1]
-            if any(part in exclude_set for part in rel_parts):
-                continue
-            files.append(file_path)
-
-    return sorted(files)
+    return list(iter_input_files(directory, output_root, suffixes=SUPPORTED_EXTENSIONS))
 
 
 def get_pdf_page_count(file_path: Path) -> int:
@@ -136,158 +126,11 @@ def split_pdf(
     return chunks
 
 
-def determine_output_path(
-    input_path: Path,
-    output_path: Path | None = None,
-    default_folder_name: str = "mistral_ocr_output",
-    add_timestamp: bool = False,
-) -> Path:
-    """Determine the output path for OCR results."""
-    if output_path:
-        if output_path.exists() and not output_path.is_dir():
-            raise ValueError(f"Output path exists and is not a directory: {output_path}")
-        output_path.mkdir(parents=True, exist_ok=True)
-        return output_path
-
-    if input_path.is_file():
-        parent_dir = input_path.parent
-    else:
-        parent_dir = input_path
-
-    # Add timestamp if requested
-    if add_timestamp:
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        folder_name = f"{default_folder_name}_{timestamp}"
-    else:
-        folder_name = default_folder_name
-
-    output_dir = parent_dir / folder_name
-    output_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir
-
-
-def _empty_metadata() -> dict:
-    return {
-        "files_processed": [],
-        "total_files": 0,
-        "processing_time_seconds": 0,
-        "errors": [],
-        "error_count": 0,
-    }
-
-
-def load_metadata(output_dir: Path) -> dict:
-    """Load existing metadata from JSON file.
-
-    Returns empty metadata on missing or corrupt files.
-    """
-    metadata_path = output_dir / "metadata.json"
-    if metadata_path.exists():
-        try:
-            with open(metadata_path) as f:
-                return json.load(f)
-        except (json.JSONDecodeError, KeyError):
-            return _empty_metadata()
-    return _empty_metadata()
-
-
-def save_metadata(
-    output_dir: Path,
-    files_processed: list[dict],
-    processing_time: float,
-    errors: list[dict],
-    base_processing_time: float | None = None,
-) -> None:
-    """Save processing metadata to JSON file (append/update mode).
-
-    Args:
-        processing_time: Elapsed time for the *current* session.
-        base_processing_time: Accumulated time from *prior* sessions. If None,
-            loaded from existing metadata (use this on the first call). Pass
-            the returned value on subsequent calls within the same session to
-            avoid overcounting.
-    """
-    # Load existing metadata
-    existing_metadata = load_metadata(output_dir)
-
-    if base_processing_time is None:
-        base_processing_time = existing_metadata.get("processing_time_seconds", 0)
-
-    # Create a dict of existing files for quick lookup
-    existing_files = {item["file"]: item for item in existing_metadata["files_processed"]}
-
-    # Update with new files (overwrite if exists, add if new)
-    for new_file in files_processed:
-        new_file["last_processed"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        existing_files[new_file["file"]] = new_file
-
-    # Merge errors: keep historical errors, append new ones (deduplicate by file)
-    existing_errors = {e["file"]: e for e in existing_metadata.get("errors", [])}
-    for err in errors:
-        err["last_seen"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        existing_errors[err["file"]] = err
-    all_errors = list(existing_errors.values())
-
-    # Update metadata — total time = prior sessions + current session elapsed
-    metadata = {
-        "files_processed": list(existing_files.values()),
-        "total_files": len(existing_files),
-        "processing_time_seconds": base_processing_time + processing_time,
-        "errors": all_errors,
-        "error_count": len(all_errors),
-        "last_updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
-
-    metadata_path = output_dir / "metadata.json"
-    tmp_path = metadata_path.with_suffix(".json.tmp")
-    with open(tmp_path, "w") as f:
-        json.dump(metadata, f, indent=2, default=str)
-    tmp_path.replace(metadata_path)
-
-
 def format_file_size(size_bytes: int) -> str:
     """Format file size in human-readable format."""
+    size: float = float(size_bytes)
     for unit in ["B", "KB", "MB", "GB"]:
-        if size_bytes < 1024.0:
-            return f"{size_bytes:.2f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.2f} TB"
-
-
-def make_unique_basename(file_path: Path, base_dir: Path | None = None) -> str:
-    """Create a unique base name for output files.
-
-    When base_dir is provided (directory mode), includes the relative path
-    to disambiguate files with the same stem in different subdirectories.
-    E.g., subdir/report.pdf -> subdir__report
-    """
-    stem = file_path.stem
-    if base_dir is not None:
-        try:
-            rel = file_path.parent.relative_to(base_dir)
-            if rel != Path("."):
-                prefix = str(rel).replace("/", "__").replace("\\", "__")
-                stem = f"{prefix}__{stem}"
-        except ValueError:
-            pass
-    return sanitize_filename(stem, max_length=200)
-
-
-def sanitize_filename(filename: str, max_length: int | None = None) -> str:
-    """Sanitize filename by removing or replacing invalid characters."""
-    invalid_chars = '<>:"/\\|?*'
-    for char in invalid_chars:
-        filename = filename.replace(char, "_")
-
-    # Only truncate if max_length is specified
-    if max_length is not None:
-        # Truncate long filenames but keep extension
-        if len(filename) > max_length and "." in filename:
-            name, ext = filename.rsplit(".", 1)
-            if len(name) > max_length - len(ext) - 1:
-                name = name[: max_length - len(ext) - 4] + "..."
-            filename = f"{name}.{ext}"
-        elif len(filename) > max_length:
-            filename = filename[: max_length - 3] + "..."
-
-    return filename
+        if size < 1024.0:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+    return f"{size:.2f} TB"

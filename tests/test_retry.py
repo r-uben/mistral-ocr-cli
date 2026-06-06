@@ -119,13 +119,29 @@ class TestProcessFileRetry:
         img = tmp_path / "doc.png"
         img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
 
-        mock_response = SimpleNamespace(pages=[])
+        mock_response = SimpleNamespace(
+            pages=[SimpleNamespace(index=0, markdown="text", images=[])]
+        )
         processor.client.ocr.process.side_effect = [
             ConnectionError("transient"),
             mock_response,
         ]
 
         result = processor.process_file(img)
-        assert result is not None
-        assert result["success"] is True
+        assert result.status.value == "completed"
+        assert result.page_count == 1
         assert processor.client.ocr.process.call_count == 2
+
+    def test_permanent_sdk_error_not_retried(self, processor, tmp_path):
+        """Audit fix: a permanent 4xx-style SDKError is not retried."""
+        img = tmp_path / "doc.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
+
+        err = Exception("unauthorized")
+        err.status_code = 401
+        processor.client.ocr.process.side_effect = err
+
+        result = processor.process_file(img)
+        assert result.status.value == "failed"
+        # 401 is permanent -> exactly one attempt, no retries.
+        assert processor.client.ocr.process.call_count == 1

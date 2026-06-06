@@ -1,4 +1,17 @@
-"""Command-line interface for Mistral OCR."""
+"""Command-line interface for Mistral OCR.
+
+Output is written through the shared ``ocr-output-contract`` package, so
+mistral's output structure is byte-identical to every sibling engine::
+
+    mistral-ocr <input> [-o DIR] [--model M] [--include-images/--no-images]
+                [--table-format markdown|html] [--extract-headers] [--extract-footers]
+                [--max-pages N] [-w N] [--reprocess] [--dry-run] [-q] [-v]
+    mistral-ocr --version
+
+The default output root is ``<input-parent>/ocr/``; ``-o`` overrides verbatim but
+is never required. The exit code is nonzero if any file failed (uniform across
+single-file and batch).
+"""
 
 import logging
 import os
@@ -6,6 +19,7 @@ import sys
 from pathlib import Path
 
 import click
+from ocr_output_contract import resolve_output_root
 from rich.logging import RichHandler
 
 from . import __version__
@@ -20,11 +34,12 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
 @click.command()
 @click.argument("input_path", type=click.Path(path_type=Path), required=True)
 @click.option(
-    "--output-path",
+    "--output-dir",
     "-o",
+    "output_dir",
     type=click.Path(path_type=Path),
     required=False,
-    help="Path to output directory (default: <input_dir>/mistral_ocr_output/)",
+    help="Output root (default: <input-parent>/ocr/). Writes <stem>/<stem>.md per document.",
 )
 @click.option(
     "--api-key",
@@ -35,8 +50,8 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
 @click.option(
     "--model",
     type=str,
-    default="mistral-ocr-latest",
-    help="Mistral OCR model to use (default: mistral-ocr-latest)",
+    default=None,
+    help="Mistral OCR model to use (default: mistral-ocr-latest / $MISTRAL_MODEL)",
 )
 @click.option(
     "--env-file",
@@ -45,45 +60,23 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
 )
 @click.option(
     "--include-images/--no-images",
-    default=True,
-    help="Include extracted images in output (default: True)",
-)
-@click.option(
-    "--save-originals/--no-save-originals",
-    default=True,
-    help="Save original input images alongside OCR results (default: True)",
-)
-@click.option(
-    "--metadata/--no-metadata",
-    "include_metadata",
-    default=True,
-    help="Include markdown metadata header block (default: True)",
-)
-@click.option(
-    "--page-headings/--no-page-headings",
-    "include_page_headings",
-    default=True,
-    help="Include markdown headings for each OCR page (default: True)",
-)
-@click.option(
-    "--add-timestamp/--no-timestamp",
-    default=False,
-    help="Add timestamp to output folder name (default: False)",
+    default=None,
+    help="Extract embedded figures as figures/figure_<N>_page<P>.png (default: True)",
 )
 @click.option(
     "--table-format",
     type=click.Choice(["markdown", "html"], case_sensitive=False),
     default=None,
-    help="Extract tables in a separate format (markdown or html). OCR 3+ only.",
+    help="Render extracted tables into the page body as markdown or html. OCR 3+ only.",
 )
 @click.option(
     "--extract-headers/--no-extract-headers",
-    default=False,
+    default=None,
     help="Extract page headers (default: False). OCR 3+ only.",
 )
 @click.option(
     "--extract-footers/--no-extract-footers",
-    default=False,
+    default=None,
     help="Extract page footers (default: False). OCR 3+ only.",
 )
 @click.option(
@@ -96,14 +89,14 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
     "--workers",
     "-w",
     type=click.IntRange(min=1),
-    default=1,
+    default=None,
     help="Number of concurrent workers for batch processing (default: 1)",
 )
 @click.option(
     "--reprocess",
     is_flag=True,
     default=False,
-    help="Reprocess files even if they already exist in metadata (default: False)",
+    help="Reprocess files even if recorded completed with a matching checksum.",
 )
 @click.option(
     "--dry-run",
@@ -111,7 +104,16 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
     default=False,
     help="List files that would be processed without calling the API",
 )
-@click.option("--quiet", "-q", is_flag=True, help="Suppress all output except errors")
+# Deprecated no-ops kept for invocation compatibility. The canonical output
+# contract owns the markdown body (always clean: ## Page N, no header block, no
+# frontmatter, no original copy), so these flags no longer change anything.
+@click.option("--save-originals/--no-save-originals", default=None, hidden=True)
+@click.option("--metadata/--no-metadata", "include_metadata", default=None, hidden=True)
+@click.option("--page-headings/--no-page-headings", "page_headings", default=None, hidden=True)
+@click.option("--add-timestamp/--no-timestamp", default=None, hidden=True)
+@click.option(
+    "--quiet", "-q", is_flag=True, help="Suppress output except file paths (for scripting)"
+)
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
 @click.option(
     "--log-file",
@@ -122,61 +124,45 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
 @click.version_option(version=__version__, prog_name="mistral-ocr")
 def main(
     input_path: Path,
-    output_path: Path | None,
+    output_dir: Path | None,
     api_key: str | None,
-    model: str,
+    model: str | None,
     env_file: Path | None,
-    include_images: bool,
-    save_originals: bool,
-    include_metadata: bool,
-    include_page_headings: bool,
-    add_timestamp: bool,
+    include_images: bool | None,
     table_format: str | None,
-    extract_headers: bool,
-    extract_footers: bool,
+    extract_headers: bool | None,
+    extract_footers: bool | None,
     max_pages: int | None,
-    workers: int,
+    workers: int | None,
     reprocess: bool,
     dry_run: bool,
+    save_originals: bool | None,  # deprecated no-op
+    include_metadata: bool | None,  # deprecated no-op
+    page_headings: bool | None,  # deprecated no-op
+    add_timestamp: bool | None,  # deprecated no-op
     quiet: bool,
     verbose: bool,
     log_file: Path | None,
 ) -> None:
-    """
-    Mistral OCR - Process documents using Mistral AI's OCR API.
+    """Mistral OCR - Process documents using Mistral AI's OCR API.
 
-    This tool processes PDF and image files using Mistral's powerful OCR capabilities,
-    extracting text, tables, equations, and images with high accuracy.
-
+    \b
     Examples:
-
-        # Process a single PDF file
         mistral-ocr document.pdf
-
-        # Process all files in a directory
-        mistral-ocr ./documents --output-path ./results
-
-        # Use a specific .env file
+        mistral-ocr ./documents -o ./results
         mistral-ocr doc.pdf --env-file .env.production
     """
     try:
-        # Resolve input path relative to original working directory
         if not input_path.is_absolute():
             input_path = Path(ORIGINAL_CWD) / input_path
-
-        # Check if input path exists
         if not input_path.exists():
             raise ValueError(f"Input path does not exist: {input_path}")
+        if output_dir and not output_dir.is_absolute():
+            output_dir = Path(ORIGINAL_CWD) / output_dir
 
-        # Resolve output path if provided
-        if output_path and not output_path.is_absolute():
-            output_path = Path(ORIGINAL_CWD) / output_path
-
-        # Quiet mode: suppress non-error output (uses processor's shared console)
         if quiet:
             console.quiet = True
 
-        # Configure logging — use verbose flag now, may upgrade later from config
         log_level = logging.DEBUG if verbose else logging.WARNING
         handlers: list[logging.Handler] = []
         if not quiet:
@@ -186,122 +172,72 @@ def main(
             file_handler.setFormatter(
                 logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
             )
-            file_handler.setLevel(logging.DEBUG)
+            # Track effective verbosity rather than pinning to DEBUG, so a plain
+            # --log-file does not capture httpx/SDK DEBUG bodies.
+            file_handler.setLevel(log_level)
             handlers.append(file_handler)
         logging.basicConfig(level=log_level, handlers=handlers, force=True)
 
-        # Print header
-        console.print("\n[bold blue]🔍 Mistral OCR[/bold blue]")
-        console.print("[dim]Powered by Mistral AI's OCR API[/dim]\n")
+        if not quiet:
+            console.print("\n[bold blue]Mistral OCR[/bold blue]")
+            console.print("[dim]Powered by Mistral AI's OCR API[/dim]\n")
 
-        # Dry-run: list files that would be processed, then exit (no API key needed)
+        # Dry-run: list files that would be processed (no API key needed).
         if dry_run:
-            if input_path.is_file():
-                size = format_file_size(input_path.stat().st_size)
-                console.print(f"  {input_path.name}  ({size})")
-                console.print("\n[dim]1 file would be processed (dry run)[/dim]")
-            elif input_path.is_dir():
-                files = get_supported_files(input_path)
-                if not files:
-                    console.print("[yellow]No supported files found.[/yellow]")
-                else:
-                    for f in files:
-                        size = format_file_size(f.stat().st_size)
-                        console.print(f"  {f.relative_to(input_path)}  ({size})")
-                    console.print(f"\n[dim]{len(files)} file(s) would be processed (dry run)[/dim]")
+            _dry_run(input_path, output_dir)
             return
 
-        # Load configuration (requires API key — after dry-run check)
-
-        # If API key is provided via CLI, set it before loading config
-        # (must happen before load_dotenv, which won't override existing vars)
+        # API key provided via CLI: set it before load_dotenv (won't override).
         if api_key:
             os.environ["MISTRAL_API_KEY"] = api_key
 
-        # Create config from environment
         config = Config.from_env(env_file)
 
-        # If config has VERBOSE=true but CLI didn't pass --verbose, upgrade log level
         if config.verbose and not verbose:
             logging.getLogger().setLevel(logging.DEBUG)
 
-        # Only override config with CLI options that were explicitly passed
+        # Only override config with CLI options that were explicitly passed, so
+        # env-var / .env precedence is respected rather than clobbered by defaults.
         ctx = click.get_current_context()
-        if (
-            "model" in ctx.params
-            and ctx.get_parameter_source("model") != click.core.ParameterSource.DEFAULT
-        ):
-            config.model = model
-        if (
-            "include_images" in ctx.params
-            and ctx.get_parameter_source("include_images") != click.core.ParameterSource.DEFAULT
-        ):
-            config.include_images = include_images
-        if (
-            "save_originals" in ctx.params
-            and ctx.get_parameter_source("save_originals") != click.core.ParameterSource.DEFAULT
-        ):
-            config.save_original_images = save_originals
-        if (
-            "include_metadata" in ctx.params
-            and ctx.get_parameter_source("include_metadata") != click.core.ParameterSource.DEFAULT
-        ):
-            config.include_metadata = include_metadata
-        if (
-            "include_page_headings" in ctx.params
-            and ctx.get_parameter_source("include_page_headings")
-            != click.core.ParameterSource.DEFAULT
-        ):
-            config.include_page_headings = include_page_headings
-        if (
-            "verbose" in ctx.params
-            and ctx.get_parameter_source("verbose") != click.core.ParameterSource.DEFAULT
-        ):
-            config.verbose = verbose
-        if (
-            "table_format" in ctx.params
-            and ctx.get_parameter_source("table_format") != click.core.ParameterSource.DEFAULT
-        ):
-            config.table_format = table_format
-        if (
-            "extract_headers" in ctx.params
-            and ctx.get_parameter_source("extract_headers") != click.core.ParameterSource.DEFAULT
-        ):
-            config.extract_header = extract_headers
-        if (
-            "extract_footers" in ctx.params
-            and ctx.get_parameter_source("extract_footers") != click.core.ParameterSource.DEFAULT
-        ):
-            config.extract_footer = extract_footers
-        if (
-            "workers" in ctx.params
-            and ctx.get_parameter_source("workers") != click.core.ParameterSource.DEFAULT
-        ):
-            config.max_workers = workers
-        if (
-            "max_pages" in ctx.params
-            and ctx.get_parameter_source("max_pages") != click.core.ParameterSource.DEFAULT
-        ):
-            config.max_pages = max_pages
 
+        def _set(name: str) -> bool:
+            return ctx.get_parameter_source(name) != click.core.ParameterSource.DEFAULT
+
+        if model is not None:
+            config.model = model
+        if include_images is not None:
+            config.include_images = include_images
+        if table_format is not None:
+            config.table_format = table_format
+        if extract_headers is not None:
+            config.extract_header = extract_headers
+        if extract_footers is not None:
+            config.extract_footer = extract_footers
+        if workers is not None:
+            config.max_workers = workers
+        if max_pages is not None:
+            config.max_pages = max_pages
+        if _set("verbose"):
+            config.verbose = verbose
         config.quiet = quiet
 
-        # Create processor
         processor = OCRProcessor(config)
+        outcome = processor.process(input_path, output_dir, reprocess=reprocess)
 
-        # Process input
-        processor.process(input_path, output_path, add_timestamp=add_timestamp, reprocess=reprocess)
+        if quiet:
+            # Scripting contract: emit one output .md path per line on stdout.
+            for path in outcome.outputs:
+                click.echo(path)
+        elif outcome.has_failures:
+            console.print(
+                f"\n[bold yellow]Processing complete with {outcome.failed} failure(s).[/bold yellow]\n"
+            )
+        else:
+            console.print("\n[bold green]Processing complete![/bold green]\n")
 
-        # Print summary
-        if processor.errors:
-            if verbose:
-                console.print("\n[yellow]⚠ Errors encountered:[/yellow]")
-                for error in processor.errors:
-                    console.print(f"  [red]• {error['file']}: {error['error']}[/red]")
-            console.print("\n[bold yellow]⚠ Processing complete with errors.[/bold yellow]\n")
-            sys.exit(1)
-
-        console.print("\n[bold green]✨ Processing complete![/bold green]\n")
+        # Uniform exit policy (canon SYS-02): nonzero if any file failed.
+        if outcome.exit_code != 0:
+            sys.exit(outcome.exit_code)
 
     except ValueError as e:
         console.print(f"\n[red]Error: {e}[/red]\n")
@@ -313,6 +249,30 @@ def main(
         console.print(f"\n[red]Unexpected error: {e}[/red]\n")
         logging.debug("Unexpected error", exc_info=True)
         sys.exit(1)
+
+
+def _dry_run(input_path: Path, output_dir: Path | None) -> None:
+    """List files that would be processed without calling the API.
+
+    Discovery mirrors the real run exactly: it resolves the same output root and
+    delegates to the contract's discovery so the dry-run never under- or
+    over-reports relative to what would actually be OCR'd (and so it surfaces the
+    output-root exclusion rather than diverging from it).
+    """
+    output_root = resolve_output_root(input_path, output_dir)
+    if input_path.is_file():
+        size = format_file_size(input_path.stat().st_size)
+        console.print(f"  {input_path.name}  ({size})")
+        console.print("\n[dim]1 file would be processed (dry run)[/dim]")
+    else:
+        files = get_supported_files(input_path, output_root)
+        if not files:
+            console.print("[yellow]No supported files found.[/yellow]")
+            return
+        for f in files:
+            size = format_file_size(f.stat().st_size)
+            console.print(f"  {f.relative_to(input_path)}  ({size})")
+        console.print(f"\n[dim]{len(files)} file(s) would be processed (dry run)[/dim]")
 
 
 if __name__ == "__main__":

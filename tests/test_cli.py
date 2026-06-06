@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
+from ocr_output_contract import RunOutcome, Status
 
 from mistral_ocr.cli import main
 
@@ -86,14 +87,16 @@ class TestQuiet:
 
         with patch("mistral_ocr.cli.OCRProcessor") as mock_cls:
             mock_proc = mock_cls.return_value
-            mock_proc.errors = []
-            mock_proc.process.return_value = None
+            outcome = RunOutcome()
+            outcome.add(Status.COMPLETED, output_path=str(tmp_path / "out.md"))
+            mock_proc.process.return_value = outcome
 
             result = runner.invoke(main, [str(pdf), "--quiet"])
             assert result.exit_code == 0
-            # Quiet mode: no banner, no completion message
+            # Quiet mode: no banner, no completion message; only the output path.
             assert "Mistral OCR" not in result.output
             assert "Processing complete" not in result.output
+            assert str(tmp_path / "out.md") in result.output
 
     def test_quiet_propagates_to_processor_console(self, runner, tmp_path, monkeypatch):
         """Quiet flag must set .quiet on the shared processor console."""
@@ -103,8 +106,7 @@ class TestQuiet:
 
         with patch("mistral_ocr.cli.OCRProcessor") as mock_cls:
             mock_proc = mock_cls.return_value
-            mock_proc.errors = []
-            mock_proc.process.return_value = None
+            mock_proc.process.return_value = RunOutcome()
 
             runner.invoke(main, [str(pdf), "--quiet"])
 
@@ -115,3 +117,43 @@ class TestQuiet:
 
             # Reset for other tests
             proc_console.quiet = False
+
+    def test_quiet_failure_not_on_stdout_goes_to_stderr(self, runner, tmp_path, monkeypatch):
+        """Under --quiet a failed doc must NOT pollute the stdout path list.
+
+        The stdout scripting contract is success .md paths only; per-file
+        failures go to stderr. This drives the real processor (client mocked to
+        fail) so the failed placeholder path is genuinely produced, then asserts
+        it is absent from stdout and the failure is on stderr.
+        """
+        _make_env(monkeypatch)
+        img = tmp_path / "broken.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        from types import SimpleNamespace
+
+        def _fail_client(*_a, **_k):
+            client = SimpleNamespace()
+            client.ocr = SimpleNamespace(
+                process=lambda **_kw: (_ for _ in ()).throw(RuntimeError("API down"))
+            )
+            client.files = SimpleNamespace(
+                upload=lambda **_kw: SimpleNamespace(id="u1"),
+                delete=lambda **_kw: None,
+            )
+            return client
+
+        from mistral_ocr.processor import console as proc_console
+
+        with patch("mistral_ocr.processor.Mistral", _fail_client):
+            result = runner.invoke(
+                main, [str(img), "--quiet", "-o", str(tmp_path / "out")], catch_exceptions=False
+            )
+
+        proc_console.quiet = False  # reset module-level state for other tests
+
+        assert result.exit_code != 0
+        # The failed placeholder .md path must NOT appear on stdout.
+        assert "broken.md" not in result.stdout
+        # The failure IS surfaced on stderr (SYS-02), even under --quiet.
+        assert "broken.png" in result.stderr
