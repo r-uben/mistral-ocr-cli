@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from mistralai import Mistral
+from mistralai.client import Mistral
 from ocr_output_contract import (
     FIGURES_DIRNAME,
     DocMetadata,
