@@ -76,6 +76,9 @@ Options:
   --extract-headers/--no-extract-headers  Extract page headers (OCR 3+)
   --extract-footers/--no-extract-footers  Extract page footers (OCR 3+)
 
+  --include-blocks/--no-include-blocks    Write per-page blocks to blocks.json (OCR 4+)
+  --confidence-scores-granularity [page|block|word]  Confidence scores in blocks.json (OCR 4+)
+
   --max-pages N                     Max PDF pages to process (default: all pages)
   -w, --workers N                   Concurrent workers for batch processing (default: 1)
   --reprocess                       Re-OCR files already recorded completed (checksum-based)
@@ -108,7 +111,8 @@ ocr/
 │   ├── figures/                # extracted embedded images (normalised to PNG)
 │   │   ├── figure_1_page1.png
 │   │   └── figure_2_page2.png
-│   └── metadata.json           # per-document sidecar: status/checksum/model/backend/...
+│   ├── metadata.json           # per-document sidecar: status/checksum/model/backend/...
+│   └── blocks.json             # only with --include-blocks (see below)
 ├── sub/dir/another_document/
 │   └── ...
 └── metadata.json               # root index, keyed by input-relative path
@@ -118,6 +122,53 @@ Resume is content-aware: a file recorded `completed` is skipped only when its SH
 checksum still matches, so editing a file in place forces a re-OCR. Failures are recorded
 with `status="failed"`, and any file/page failure drives a nonzero exit (uniform across
 single-file and batch runs).
+
+### Blocks and confidence scores (OCR 4+)
+
+`--include-blocks` requests per-page `blocks[]` — structural type, bounding box,
+content and reading order — and `--confidence-scores-granularity {page,block,word}`
+requests confidence scores. Both are **off by default**, and both write to a
+`blocks.json` sidecar rather than into the markdown:
+
+```json
+{
+  "version": 1,
+  "backend": "mistral-api",
+  "model": "mistral-ocr-latest",
+  "pages": [
+    {
+      "page": 1,
+      "blocks": [
+        {
+          "type": "text",
+          "top_left_x": 43, "top_left_y": 55,
+          "bottom_right_x": 125, "bottom_right_y": 69,
+          "content": "Migration parity test - page 1"
+        }
+      ],
+      "confidence_scores": {"average_page_confidence_score": 0.97}
+    }
+  ]
+}
+```
+
+Block types are `text`, `title`, `list`, `table`, `image`, `equation`, `caption`,
+`code`, `references`, `aside_text`, `header`, `footer`, `signature`.
+
+Three properties worth relying on:
+
+- **The markdown body never changes.** Turning blocks on produces a byte-identical
+  `.md`; the sidecar is purely additive. Blocks live outside `metadata.json`
+  because `DocMetadata` is a closed field set owned by the shared output contract.
+- **`page` matches the body's `## Page N` headers**, including for large PDFs split
+  across requests, so the sidecar joins cleanly to the text.
+- **Enabling either flag forces a re-OCR** of affected documents, since it changes
+  the run fingerprint. Leaving both off keeps the fingerprint exactly as it was
+  before this feature existed, so upgrading does **not** silently reprocess an
+  existing corpus at $4/1k pages. Turning blocks off again removes the sidecar.
+
+Embedded base64 payloads are stripped from blocks — figures are already written to
+`figures/`, and the API's image ids are request-local, so they would not resolve.
 
 ## Configuration
 
@@ -131,6 +182,8 @@ All CLI options can also be set via environment variables or a `.env` file:
 | `--table-format` | `TABLE_FORMAT` | (none) |
 | `--extract-headers` | `EXTRACT_HEADER` | `false` |
 | `--extract-footers` | `EXTRACT_FOOTER` | `false` |
+| `--include-blocks` | `INCLUDE_BLOCKS` | `false` |
+| `--confidence-scores-granularity` | `CONFIDENCE_SCORES_GRANULARITY` | (off) |
 | `--max-pages` | `MAX_PAGES` | (all pages) |
 | `--workers` | `MAX_WORKERS` | `1` |
 | `--verbose` | `VERBOSE` | `false` |
