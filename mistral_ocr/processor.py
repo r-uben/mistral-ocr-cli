@@ -36,6 +36,7 @@ Audit fixes baked in here:
 from __future__ import annotations
 
 import io
+import json
 import logging
 import re
 import tempfile
@@ -96,6 +97,12 @@ err_console = Console(stderr=True)
 
 #: Backend identifier recorded in metadata. Mistral is a cloud OCR API.
 BACKEND = "mistral-api"
+
+#: Sidecar carrying the OCR 4 ``blocks[]`` / confidence payload. Written beside
+#: ``metadata.json``, never inside it (``DocMetadata`` is a closed field set)
+#: and never inside ``figures/`` (the only directory conformance enumerates).
+BLOCKS_FILENAME = "blocks.json"
+BLOCKS_SIDECAR_VERSION = 1
 
 # Mistral API limit: max pages per single OCR request
 MAX_PAGES_PER_REQUEST = 1000
@@ -210,6 +217,12 @@ class OCRResult:
     error: str | None = None
     #: Non-fatal note (e.g. ``--max-pages`` truncation), recorded in metadata.
     note: str | None = None
+    #: OCR 4 ``blocks[]`` / confidence scores, keyed by the same 1-indexed page
+    #: number used by the ``## Page N`` headers, so a consumer can join the
+    #: sidecar to the body. Empty unless ``--include-blocks`` /
+    #: ``--confidence-scores-granularity`` were requested. Never rendered into
+    #: the markdown body — it is written to a ``blocks.json`` sidecar.
+    page_blocks: dict[int, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def page_count(self) -> int:
@@ -308,6 +321,10 @@ class OCRProcessor:
             ocr_kwargs["extract_header"] = True
         if self.config.extract_footer:
             ocr_kwargs["extract_footer"] = True
+        if self.config.include_blocks:
+            ocr_kwargs["include_blocks"] = True
+        if self.config.confidence_scores_granularity:
+            ocr_kwargs["confidence_scores_granularity"] = self.config.confidence_scores_granularity
         return ocr_kwargs
 
     def _upload_and_process(self, file_path: Path) -> object:
@@ -552,11 +569,53 @@ class OCRProcessor:
                 logger.warning("Failed to decode embedded image: %s", exc)
         return out
 
+    @staticmethod
+    def _jsonable(value: Any) -> Any:
+        """Recursively convert an SDK object to JSON-safe primitives.
+
+        Pydantic models are dumped via ``model_dump``; any ``*base64*`` key is
+        dropped wholesale. An OCR 4 ``image`` block can carry the same embedded
+        payload the figures pipeline already writes to disk, and the API's image
+        ids are chunk-local (``img-0.jpeg`` restarts in every chunk of a split
+        PDF), so keeping either would bloat the sidecar with bytes that resolve
+        to nothing. Bbox / type / content survive; the pixels do not.
+        """
+        if hasattr(value, "model_dump"):
+            value = value.model_dump()
+        if isinstance(value, dict):
+            return {
+                k: OCRProcessor._jsonable(v) for k, v in value.items() if "base64" not in k.lower()
+            }
+        if isinstance(value, (list, tuple)):
+            return [OCRProcessor._jsonable(v) for v in value]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            return value
+        return str(value)
+
+    def _page_block_payload(self, page: Any) -> dict[str, Any]:
+        """Extract the OCR 4 blocks / confidence payload for one page.
+
+        Returns an empty dict when the page carries neither, so a response from
+        a model that ignored the flags produces no sidecar rather than a file
+        full of nulls.
+        """
+        payload: dict[str, Any] = {}
+        if self.config.include_blocks:
+            blocks = getattr(page, "blocks", None)
+            if blocks:
+                payload["blocks"] = self._jsonable(blocks)
+        if self.config.confidence_scores_granularity:
+            scores = getattr(page, "confidence_scores", None)
+            if scores:
+                payload["confidence_scores"] = self._jsonable(scores)
+        return payload
+
     def _parse_response(self, file_path: Path, response: Any, start: float) -> OCRResult:
         """Turn an API response into an OCRResult (per-page text + figure bytes)."""
         pages_obj = getattr(response, "pages", None) or []
         pages: list[str] = []
         page_images: dict[int, list[bytes]] = {}
+        page_blocks: dict[int, dict[str, Any]] = {}
         for page in pages_obj:
             page_no = getattr(page, "index", len(pages)) + 1
             pages.append(self._render_page_markdown(page))
@@ -564,6 +623,9 @@ class OCRProcessor:
                 imgs = self._page_image_bytes(page)
                 if imgs:
                     page_images[page_no] = imgs
+            payload = self._page_block_payload(page)
+            if payload:
+                page_blocks[page_no] = payload
         note = getattr(response, "truncated", None) if hasattr(response, "truncated") else None
         return OCRResult(
             file_path=file_path,
@@ -571,6 +633,7 @@ class OCRProcessor:
             page_images=page_images,
             processing_time=time.time() - start,
             note=note,
+            page_blocks=page_blocks,
         )
 
     def process_file(self, file_path: Path) -> OCRResult:
@@ -622,9 +685,41 @@ class OCRProcessor:
             body = "*[OCR Failed]*\n"
 
         markdown_path.write_text(body, encoding="utf-8")
+        self._write_blocks_sidecar(result, doc_dir)
         if self.config.verbose:
             console.print(f"[green]Saved:[/green] {markdown_path}")
         return markdown_path
+
+    def _write_blocks_sidecar(self, result: OCRResult, doc_dir: Path) -> None:
+        """Write (or remove) the ``blocks.json`` sidecar for one document.
+
+        The sidecar lives beside ``metadata.json`` rather than inside it:
+        ``DocMetadata`` is a closed field set, and the conformance harness only
+        enumerates ``figures/``, so an extra top-level file is contract-safe
+        while an extra metadata field or an extra file under ``figures/`` is not.
+
+        Page keys are the same 1-indexed numbers as the body's ``## Page N``
+        headers (globally re-indexed for chunked PDFs), so a consumer can join
+        the two. Nothing here is ever rendered into the markdown body.
+
+        A re-run with blocks turned off deletes any sidecar left by an earlier
+        run: otherwise the doc dir would carry blocks from one fingerprint next
+        to metadata from another, silently claiming to describe this run.
+        """
+        sidecar = doc_dir / BLOCKS_FILENAME
+        if not result.page_blocks:
+            sidecar.unlink(missing_ok=True)
+            return
+        payload = {
+            "version": BLOCKS_SIDECAR_VERSION,
+            "backend": BACKEND,
+            "model": self.config.model,
+            "pages": [
+                {"page": page_no, **result.page_blocks[page_no]}
+                for page_no in sorted(result.page_blocks)
+            ],
+        }
+        sidecar.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
     @staticmethod
     def _render_page_with_figures(text: str, figures: list[_SavedFigure]) -> str:
@@ -710,6 +805,16 @@ class OCRProcessor:
         input checksum. ``extra`` carries the RESOLVED effective values (including
         falsy ones), so ``True``/``False`` stay distinct and key order is
         irrelevant.
+
+        The OCR 4 keys are the one deliberate exception: they are added ONLY when
+        enabled. ``run_fingerprint`` hashes the whole ``extra`` dict, so emitting
+        ``include_blocks: False`` would change every fingerprint the moment this
+        feature shipped, invalidating every previously completed document and
+        forcing a full re-OCR of existing corpora at OCR 4 pricing ($4/1k pages)
+        — for a flag the user never turned on. Omitting them at their defaults
+        keeps an untouched run byte- and fingerprint-identical to one made before
+        this feature existed, while still forcing a re-OCR when a flag is
+        actually toggled (adding or removing the key changes the hash).
         """
         extra = {
             "table_format": self.config.table_format or None,
@@ -717,6 +822,10 @@ class OCRProcessor:
             "extract_footer": bool(self.config.extract_footer),
             "include_images": bool(self.config.include_images),
         }
+        if self.config.include_blocks:
+            extra["include_blocks"] = True
+        if self.config.confidence_scores_granularity:
+            extra["confidence_scores_granularity"] = self.config.confidence_scores_granularity
         fingerprint: str = run_fingerprint(model=self.config.model, backend=BACKEND, extra=extra)
         return fingerprint
 

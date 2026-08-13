@@ -23,7 +23,7 @@ from ocr_output_contract import resolve_output_root
 from rich.logging import RichHandler
 
 from . import __version__
-from .config import Config
+from .config import CONFIDENCE_GRANULARITIES, Config
 from .processor import OCRProcessor, console
 from .utils import format_file_size, get_supported_files
 
@@ -80,6 +80,24 @@ ORIGINAL_CWD = os.environ.get("MISTRAL_OCR_CWD", os.getcwd())
     help="Extract page footers (default: False). OCR 3+ only.",
 )
 @click.option(
+    "--include-blocks/--no-include-blocks",
+    default=None,
+    help=(
+        "Request per-page blocks (type, bbox, content, reading order) and write "
+        "them to a blocks.json sidecar (default: False). The markdown body is "
+        "unchanged. OCR 4+ only."
+    ),
+)
+@click.option(
+    "--confidence-scores-granularity",
+    type=click.Choice(list(CONFIDENCE_GRANULARITIES), case_sensitive=False),
+    default=None,
+    help=(
+        "Request confidence scores at page, block or word level, written to the "
+        "blocks.json sidecar (default: off). OCR 4+ only."
+    ),
+)
+@click.option(
     "--max-pages",
     type=click.IntRange(min=1),
     default=None,
@@ -132,6 +150,8 @@ def main(
     table_format: str | None,
     extract_headers: bool | None,
     extract_footers: bool | None,
+    include_blocks: bool | None,
+    confidence_scores_granularity: str | None,
     max_pages: int | None,
     workers: int | None,
     reprocess: bool,
@@ -213,6 +233,10 @@ def main(
             config.extract_header = extract_headers
         if extract_footers is not None:
             config.extract_footer = extract_footers
+        if include_blocks is not None:
+            config.include_blocks = include_blocks
+        if confidence_scores_granularity is not None:
+            config.confidence_scores_granularity = confidence_scores_granularity.lower()
         if workers is not None:
             config.max_workers = workers
         if max_pages is not None:

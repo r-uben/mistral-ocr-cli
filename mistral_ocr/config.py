@@ -6,6 +6,9 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+#: Valid values for ``--confidence-scores-granularity`` (OCR 4).
+CONFIDENCE_GRANULARITIES = ("page", "block", "word")
+
 
 @dataclass
 class Config:
@@ -25,6 +28,12 @@ class Config:
     table_format: str | None = None  # None, "markdown", or "html"
     extract_header: bool = False
     extract_footer: bool = False
+    #: OCR 4: request per-page ``blocks[]`` (type, bbox, content, reading order).
+    #: Off by default so existing callers get byte-identical output and an
+    #: unchanged run fingerprint after upgrading. See ``_run_fingerprint``.
+    include_blocks: bool = False
+    #: OCR 4: ``page`` / ``block`` / ``word`` confidence scores. ``None`` = off.
+    confidence_scores_granularity: str | None = None
     max_pages: int | None = None  # None = no limit
     max_workers: int = 1
     max_retries: int = 3
@@ -50,6 +59,13 @@ class Config:
         table_fmt = os.getenv("TABLE_FORMAT", "").lower() or None
         if table_fmt and table_fmt not in ("markdown", "html"):
             table_fmt = None
+
+        granularity = os.getenv("CONFIDENCE_SCORES_GRANULARITY", "").lower() or None
+        if granularity and granularity not in CONFIDENCE_GRANULARITIES:
+            raise ValueError(
+                f"CONFIDENCE_SCORES_GRANULARITY must be one of "
+                f"{', '.join(sorted(CONFIDENCE_GRANULARITIES))}, got: {granularity!r}"
+            )
 
         try:
             max_file_size_mb = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
@@ -96,6 +112,8 @@ class Config:
             table_format=table_fmt,
             extract_header=os.getenv("EXTRACT_HEADER", "false").lower() == "true",
             extract_footer=os.getenv("EXTRACT_FOOTER", "false").lower() == "true",
+            include_blocks=os.getenv("INCLUDE_BLOCKS", "false").lower() == "true",
+            confidence_scores_granularity=granularity,
             max_pages=max_pages_val,
             max_workers=max(1, int(os.getenv("MAX_WORKERS", "1"))),
             max_retries=max_retries,
