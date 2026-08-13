@@ -18,7 +18,7 @@ This is one of five OCR CLI tools with a shared design: clean Markdown output, b
 | [deepseek-ocr-cli](https://github.com/r-uben/deepseek-ocr-cli) | DeepSeek vision | Local (Ollama / vLLM) | Free | General-purpose local OCR with multi-backend flexibility |
 | [gemini-ocr-cli](https://github.com/r-uben/gemini-ocr-cli) | Google Gemini | Cloud API | Free tier / Pay-per-use | Fast cloud OCR with concurrent processing |
 | [marker-ocr-cli](https://github.com/r-uben/marker-ocr-cli) | Marker (Surya + Texify) | Local | Free | Academic papers with equations, tables, complex layouts |
-| **mistral-ocr-cli** (this repo) | Mistral OCR API | Cloud API | ~$1/1k pages | Structured extraction (tables, headers, footers) |
+| **mistral-ocr-cli** (this repo) | Mistral OCR API | Cloud API | $4/1k pages | Structured extraction (tables, headers, footers) |
 | [nougat-ocr-cli](https://github.com/r-uben/nougat-ocr-cli) | Meta Nougat | Local (GPU) | Free | Academic papers, GPU-accelerated batch processing |
 
 ## Installation
@@ -166,7 +166,20 @@ uv run mypy mistral_ocr/ --ignore-missing-imports
 
 ## Pricing
 
-Mistral OCR API: ~$1 per 1,000 pages. See [Mistral pricing](https://mistral.ai/products/pricing/) for current rates.
+Mistral OCR API: **$4 per 1,000 pages** ($2 per 1,000 via the Batch API).
+
+The default model, `mistral-ocr-latest`, is an alias for OCR 4.1 — confirmed
+against the models endpoint, where it reports aliases `mistral-ocr-4` and
+`mistral-ocr-4-1`. Pricing moved to $4/1k with the OCR 4 release; earlier OCR 3
+rates no longer apply to the default model.
+
+Note that the OCR response echoes back whichever model string you pass, so a run
+made with the alias records `mistral-ocr-latest` and cannot later be attributed
+to a specific OCR 4 point release. Pass `--model mistral-ocr-4-1` (or
+`mistral-ocr-4-0`) explicitly if you need the exact version pinned in
+`metadata.json` and in the resume fingerprint.
+
+See [Mistral pricing](https://mistral.ai/pricing/api) for current rates.
 
 ## License
 
